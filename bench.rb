@@ -3,6 +3,7 @@
 require 'rubygems'
 require 'bundler/setup'
 require 'securerandom'
+require 'colorize'
 require 'ckb'
 
 ALWAYS_SUCCESS = "0x0000000000000000000000000000000000000000000000000000000000000001".freeze
@@ -57,7 +58,8 @@ class WatchPool
       return false
     end
     block = @api.get_block(block_hash)
-    block_time = BlockTime.new(number: block[:number], timestamp: block[:timestamp])
+    header = block[:header]
+    block_time = BlockTime.new(number: header[:number], timestamp: header[:timestamp])
     block[:proposal_transactions].each do |proposal_id|
       mark_proposed proposal_id, block_time
     end
@@ -90,7 +92,7 @@ class WatchPool
       raise "fuck, should not happen" if tx_task.nil?
       tx_task.proposed_at = block_time
       @proposed[tx_hash] = tx_task
-      puts "tx #{tx_hash} get proposed at #{block_time}"
+      puts "tx #{tx_hash} get proposed at #{block_time}".colorize(:green)
     end
   end
 
@@ -98,7 +100,7 @@ class WatchPool
     if (tx_task = @proposed.delete tx_hash)
       tx_task.committed_at = block_time
       @committed[tx_hash] = tx_task
-      puts "tx #{tx_hash} get commited at #{block_time}"
+      puts "tx #{tx_hash} get commited at #{block_time}".colorize(:green)
     end
   end
 end
@@ -164,7 +166,7 @@ def prepare_cells(api, from, count, lock_id: )
   TxTask.new(tx_hash: tx_hash, send_at: BlockTime.new(number: tip[:number].to_i, timestamp: tip[:timestamp].to_i))
 end
 
-def send_txs(prepare_tx_hash, txs_count, lock_id: )
+def send_txs(api, prepare_tx_hash, txs_count, lock_id: )
   txs = txs_count.times.map do |i|
     inputs = [
       {
@@ -217,22 +219,22 @@ def run(api, from, txs_count)
   watch_pool = WatchPool.new(api, tip[:number].to_i)
   lock_id = random_lock_id
   puts "generate random lock_id: #{lock_id}"
-  puts "prepare #{txs_count} benchmark cells from height #{from}"
+  puts "prepare #{txs_count} benchmark cells from height #{from}".colorize(:yellow)
   tx_task = prepare_cells(api, from, txs_count, lock_id: lock_id)
   watch_pool.add(tx_task.tx_hash, tx_task)
-  puts "wait prepare tx get confirmed ..."
+  puts "wait prepare tx get confirmed ...".colorize(:yellow)
   puts tx_task
   watch_pool.wait(tx_task.tx_hash)
-  puts "start sending #{txs_count} txs..."
+  puts "start sending #{txs_count} txs...".colorize(:yellow)
   tx_tasks = send_txs(api, from, txs_count, lock_id: lock_id)
   tx_tasks.each do |task|
     watch_pool.add task
   end
-  puts "wait all txs get confirmed ..."
+  puts "wait all txs get confirmed ...".colorize(:yellow)
   tx_tasks.wait_all
-  puts "complete, saving ..."
+  puts "complete, saving ...".colorize(:yellow)
   Marshal.dump(tx_tasks, open("tx_records", "w+"))
-  puts "statistis ..."
+  puts "statistis ...".colorize(:yellow)
   statistics(tx_tasks)
 end
 
