@@ -118,32 +118,42 @@ def get_always_success_lock_hash(args: [])
   CKB::Utils.json_script_to_type_hash(always_success_lock)
 end
 
-def get_always_success_cellbase(api, from, to: from + 100)
+def get_always_success_cellbase(api, from:, cap:)
   lock_hash = get_always_success_lock_hash
-  api.get_cells_by_lock_hash(lock_hash, from.to_s, to.to_s).find {|c| c[:capacity] == 50000 }
+  cells = []
+  while cells.size * 50000 < cap
+    new_cells = api.get_cells_by_lock_hash(lock_hash, from.to_s, (from + 100).to_s).select {|c| c[:capacity] == 50000 }
+    if new_cells.empty?
+      puts "can't found enough cellbase #{cap}"
+      exit 1
+    end
+    cells += new_cells
+    from += 100
+  end
+  cells
 end
 
 def prepare_cells(api, from, count, lock_id: )
-  cell = get_always_success_cellbase(api, from)
-  if cell.nil?
+  cells = get_always_success_cellbase(api, from: from, cap: count * PER_OUTPUT_CAPACITY)
+  if cells.empty?
     puts "can't find cellbase in #{from}"
     exit 1
   end
-  puts "spend: #{cell}"
-  inputs = [
+  puts "found cellbases"
+  # produce cells
+  tip = api.get_tip_header
+  send_time = BlockTime.new(number: tip[:number].to_i, timestamp: tip[:timestamp].to_i)
+
+  inputs = cells.map do |cell|
     {
       previous_output: cell[:out_point],
       args: [],
       valid_since: "0",
     }
-  ]
-
-  if cell[:capacity] < count
-    puts "txs too large, txs: #{count}, cellbase capacity: #{cell[:capacity]}"
-    exit 1
   end
 
-  per_output_cap = (cell[:capacity] / count).to_s
+  total_cap = cells.map{|c| c[:capacity]}.sum
+  per_output_cap = (total_cap / count).to_s
   outputs = count.times.map do |i|
     {
       capacity: per_output_cap,
@@ -155,8 +165,6 @@ def prepare_cells(api, from, count, lock_id: )
     }
   end
 
-  # produce cells
-  tip = api.get_tip_header
   tx = CKB::Transaction.new(
     version: 0,
     deps: [api.system_script_out_point],
@@ -164,7 +172,7 @@ def prepare_cells(api, from, count, lock_id: )
     outputs: outputs
   )
   tx_hash = api.send_transaction(tx.to_h)
-  TxTask.new(tx_hash: tx_hash, send_at: BlockTime.new(number: tip[:number].to_i, timestamp: tip[:timestamp].to_i))
+  TxTask.new(tx_hash: tx_hash, send_at: send_time)
 end
 
 def send_txs(api, prepare_tx_hash, txs_count, lock_id: )
@@ -241,6 +249,14 @@ end
 
 if __FILE__ == $0
   api = CKB::API.new
-  from, txs_count = ARGV[0].to_i, ARGV[1].to_i
+  command, from, txs_count = ARGV[0], ARGV[1].to_i, ARGV[2].to_i
+  if command == "run"
   run(api, from, txs_count)
+  elsif command == "stat"
+    puts "statistics..."
+  else
+    puts "unknown command #{command}"
+    puts "try: bench.rb run <block height> <count of tx>"
+    puts "example: bench.rb run 23005 20"
+  end
 end
