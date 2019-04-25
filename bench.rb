@@ -62,10 +62,15 @@ class WatchPool
     block = @api.get_block(block_hash)
     header = block[:header]
     block_time = BlockTime.new(number: header[:number].to_i, timestamp: header[:timestamp].to_i)
-    block[:proposal_transactions].each do |proposal_id|
+    block[:proposals].each do |proposal_id|
       mark_proposed proposal_id, block_time
     end
-    block[:commit_transactions].each do |tx|
+    block[:uncles].each do |uncle|
+      uncle[:proposals].each do |proposal_id|
+        mark_proposed proposal_id, block_time
+      end
+    end
+    block[:transactions].each do |tx|
       mark_committed tx[:hash], block_time
     end
     @height += 1
@@ -149,7 +154,7 @@ def prepare_cells(api, from, count, lock_id: )
     {
       previous_output: cell[:out_point],
       args: [],
-      valid_since: "0",
+      since: "0",
     }
   end
 
@@ -170,7 +175,8 @@ def prepare_cells(api, from, count, lock_id: )
     version: 0,
     deps: [api.system_script_out_point],
     inputs: inputs,
-    outputs: outputs
+    outputs: outputs,
+    witnesses: [],
   )
   tx_hash = api.send_transaction(tx.to_h)
   TxTask.new(tx_hash: tx_hash, send_at: send_time)
@@ -182,7 +188,7 @@ def send_txs(api, prepare_tx_hash, txs_count, lock_id: )
       {
         previous_output: {hash: prepare_tx_hash, index: i},
         args: [],
-        valid_since: "0"
+        since: "0"
       }
     ]
     outputs = [
@@ -201,6 +207,7 @@ def send_txs(api, prepare_tx_hash, txs_count, lock_id: )
       deps: [api.system_script_out_point],
       inputs: inputs,
       outputs: outputs,
+      witnesses: [],
     )
   end
   tip = api.get_tip_header
@@ -267,7 +274,7 @@ def run(api, from, txs_count)
   end
   puts "wait all txs get confirmed ...".colorize(:yellow)
   watch_pool.wait_all
-  puts "complete, saving ...".colorize(:yellow)
+  puts "complete, saving to ./tx_records ...".colorize(:yellow)
   Marshal.dump(tx_tasks, open("tx_records", "w+"))
 end
 
