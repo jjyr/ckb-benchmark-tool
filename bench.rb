@@ -7,6 +7,7 @@ require 'colorize'
 require 'ckb'
 
 ALWAYS_SUCCESS = "0x0000000000000000000000000000000000000000000000000000000000000001".freeze
+PER_OUTPUT_CAPACITY = 128
 
 class BlockTime
   attr_accessor :timestamp, :number
@@ -177,8 +178,8 @@ def send_txs(api, prepare_tx_hash, txs_count, lock_id: )
     ]
     outputs = [
       {
-        capacity: cell[:capacity].to_s,
-        data: CKB::Utils.bin_to_hex("tx#{i}"),
+        capacity: PER_OUTPUT_CAPACITY.to_s,
+        data: CKB::Utils.bin_to_hex(""),
         lock: {
           binary_hash: ALWAYS_SUCCESS,
           args: [lock_id]
@@ -211,7 +212,7 @@ def send_txs(api, prepare_tx_hash, txs_count, lock_id: )
 end
 
 def statistics(tx_tasks)
-  puts "Total: #{tx_tasks.len}"
+  puts "Total: #{tx_tasks.size}"
 end
 
 def run(api, from, txs_count)
@@ -226,12 +227,12 @@ def run(api, from, txs_count)
   puts tx_task
   watch_pool.wait(tx_task.tx_hash)
   puts "start sending #{txs_count} txs...".colorize(:yellow)
-  tx_tasks = send_txs(api, from, txs_count, lock_id: lock_id)
+  tx_tasks = send_txs(api, tx_task.tx_hash, txs_count, lock_id: lock_id)
   tx_tasks.each do |task|
-    watch_pool.add task
+    watch_pool.add task.tx_hash, task
   end
   puts "wait all txs get confirmed ...".colorize(:yellow)
-  tx_tasks.wait_all
+  watch_pool.wait_all
   puts "complete, saving ...".colorize(:yellow)
   Marshal.dump(tx_tasks, open("tx_records", "w+"))
   puts "statistis ...".colorize(:yellow)
