@@ -47,7 +47,7 @@ class WatchPool
 
   def add(tx_hash, task)
     @initial[tx_hash] = task
-    @short_id[tx_hash[0..22]] = tx_hash
+    @short_id[tx_hash[0..21]] = tx_hash
   end
 
   def poll
