@@ -5,9 +5,6 @@ require 'bundler/setup'
 require 'securerandom'
 require 'ckb'
 
-txs_count = 0
-from = 0
-
 ALWAYS_SUCCESS = "0x0000000000000000000000000000000000000000000000000000000000000001".freeze
 
 class BlockTime
@@ -16,6 +13,10 @@ class BlockTime
   def initialize(timestamp:, number:)
     @timestamp = timestamp
     @number = number
+  end
+
+  def to_s
+    "block #{number} #{timestamp}"
   end
 end
 
@@ -27,6 +28,78 @@ class TxTask
     @send_at = send_at
     @proposed_at = proposed_at
     @committed_at = committed_at
+  end
+
+  def to_s
+    "task #{tx_hash} send_at #{send_at} proposed_at #{proposed_at} committed_at #{committed_at}"
+  end
+end
+
+class WatchPool
+  def initialize(api, height)
+    @api = api
+    @height = height
+    @initial = {}
+    @short_id = {}
+    @proposed = {}
+    @committed = {}
+  end
+
+  def add(tx_hash, task)
+    @initial[tx_hash] = task
+    @short_id[tx_hash[0..22]] = tx_hash
+  end
+
+  def poll
+    block_hash = @api.get_block_hash((@height + 1).to_s)
+    puts "check block #{@height + 1} #{block_hash}"
+    if block_hash.nil?
+      return false
+    end
+    block = @api.get_block(block_hash)
+    block_time = BlockTime.new(number: block[:number], timestamp: block[:timestamp])
+    block[:proposal_transactions].each do |proposal_id|
+      mark_proposed proposal_id, block_time
+    end
+    block[:commit_transactions].each do |tx|
+      mark_committed tx[:hash], block_time
+    end
+    @height += 1
+    true
+  end
+
+  def wait(tx_hash)
+    loop do
+      sleep 3 unless poll
+      return if @committed.include? tx_hash
+    end
+  end
+
+  def wait_all
+    loop do
+      sleep 3 unless poll
+      return if @initial.empty? && @proposed.empty?
+    end
+  end
+
+  private
+
+  def mark_proposed proposal_id, block_time
+    if (tx_hash = @short_id.delete proposal_id)
+      tx_task = @initial.delete(tx_hash)
+      raise "fuck, should not happen" if tx_task.nil?
+      tx_task.proposed_at = block_time
+      @proposed[tx_hash] = tx_task
+      puts "tx #{tx_hash} get proposed at #{block_time}"
+    end
+  end
+
+  def mark_committed tx_hash, block_time
+    if (tx_task = @proposed.delete tx_hash)
+      tx_task.committed_at = block_time
+      @committed[tx_hash] = tx_task
+      puts "tx #{tx_hash} get commited at #{block_time}"
+    end
   end
 end
 
@@ -88,7 +161,7 @@ def prepare_cells(api, from, count, lock_id: )
     outputs: outputs
   )
   tx_hash = api.send_transaction(tx.to_h)
-  TxTask.new(tx_hash: tx_hash, send_at: BlockTime.new(number: tip[:number], timestamp: tip[:timestamp]))
+  TxTask.new(tx_hash: tx_hash, send_at: BlockTime.new(number: tip[:number].to_i, timestamp: tip[:timestamp].to_i))
 end
 
 def send_txs(prepare_tx_hash, txs_count, lock_id: )
@@ -119,7 +192,7 @@ def send_txs(prepare_tx_hash, txs_count, lock_id: )
     )
   end
   tip = api.get_tip_header
-  block_time = BlockTime.new(number: tip[:number], timestamp: tip[:timestamp])
+  block_time = BlockTime.new(number: tip[:number].to_i, timestamp: tip[:timestamp].to_i)
   # sending
   tx_tasks = []
   txs.each_with_index do |tx, i|
@@ -127,7 +200,7 @@ def send_txs(prepare_tx_hash, txs_count, lock_id: )
     begin
       tx_hash = api.send_transaction(tx.to_h)
       tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: block_time)
-    rescue Exception => e
+    rescue StandardError => e
       p e
     end
   end
@@ -140,18 +213,22 @@ def statistics(tx_tasks)
 end
 
 def run(api, from, txs_count)
+  tip = api.get_tip_header
+  watch_pool = WatchPool.new(api, tip[:number].to_i)
   lock_id = random_lock_id
-  puts "Generate random lock_id: #{lock_id}"
+  puts "generate random lock_id: #{lock_id}"
   puts "prepare #{txs_count} benchmark cells from height #{from}"
   tx_task = prepare_cells(api, from, txs_count, lock_id: lock_id)
-  watch_pool.add(tx_task)
+  watch_pool.add(tx_task.tx_hash, tx_task)
+  puts "wait prepare tx get confirmed ..."
+  puts tx_task
   watch_pool.wait(tx_task.tx_hash)
-  puts "Start sending #{txs_count} txs..."
+  puts "start sending #{txs_count} txs..."
   tx_tasks = send_txs(api, from, txs_count, lock_id: lock_id)
   tx_tasks.each do |task|
     watch_pool.add task
   end
-  puts "Wait for confirm ..."
+  puts "wait all txs get confirmed ..."
   tx_tasks.wait_all
   puts "complete, saving ..."
   Marshal.dump(tx_tasks, open("tx_records", "w+"))
