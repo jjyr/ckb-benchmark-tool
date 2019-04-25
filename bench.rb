@@ -3,8 +3,9 @@
 require 'rubygems'
 require 'bundler/setup'
 require 'securerandom'
-require 'colorize'
 require 'ckb'
+require 'colorize'
+require 'terminal-table'
 
 ALWAYS_SUCCESS = "0x0000000000000000000000000000000000000000000000000000000000000001".freeze
 PER_OUTPUT_CAPACITY = 128
@@ -13,7 +14,7 @@ class BlockTime
   attr_accessor :timestamp, :number
 
   def initialize(timestamp:, number:)
-    @timestamp = timestamp
+    @timestamp = timestamp / 1000
     @number = number
   end
 
@@ -60,7 +61,7 @@ class WatchPool
     end
     block = @api.get_block(block_hash)
     header = block[:header]
-    block_time = BlockTime.new(number: header[:number], timestamp: header[:timestamp])
+    block_time = BlockTime.new(number: header[:number].to_i, timestamp: header[:timestamp].to_i)
     block[:proposal_transactions].each do |proposal_id|
       mark_proposed proposal_id, block_time
     end
@@ -219,8 +220,33 @@ def send_txs(api, prepare_tx_hash, txs_count, lock_id: )
   tx_tasks
 end
 
+def calculate_row(times)
+  avg = times.sum / times.size.to_f
+  median = times[times.size / 2]
+  f_range = 0...(times.size / 5)
+  f_20  = times[f_range].sum / f_range.size.to_f
+  s_range = -(times.size / 5)..-1
+  s_20  = times[s_range].sum / s_range.size.to_f
+  tps = times.size / (times[-1] - times[0]).to_f
+  [avg, median, f_20, s_20, tps]
+end
+
 def statistics(tx_tasks)
   puts "Total: #{tx_tasks.size}"
+  first_send = tx_tasks.sort_by(&:send_at).first
+  last_committed = tx_tasks.sort_by(&:committed_at).last
+  puts "Total TPS: #{tx_tasks.size / (last_committed.committed_at.timestamp - first_send.send_at.timestamp)}"
+  # proposals
+  head = ['type', 'avg', 'median', 'fastest 20%', 'slowest 20%', 'tps']
+  rows = []
+  propo_times = tx_tasks.map{|t| t.proposed_at.timestamp}.sort
+  rows << ['Proposed at', *calculate_row(propo_times).map{|t| t.infinite? ? t : Time.at(t.to_i)}]
+  commit_times = tx_tasks.map{|t| t.committed_at.timestamp}.sort
+  rows << ['Committed at', *calculate_row(commit_times).map{|t| t.infinite? ? t : Time.at(t.to_i)}]
+  relative_times = tx_tasks.map{|t| t.committed_at.timestamp - t.send_at.timestamp}.sort
+  rows << ['Committed after', *calculate_row(relative_times)]
+  table = Terminal::Table.new :headings => head, :rows => rows
+  puts table
 end
 
 def run(api, from, txs_count)
@@ -243,8 +269,6 @@ def run(api, from, txs_count)
   watch_pool.wait_all
   puts "complete, saving ...".colorize(:yellow)
   Marshal.dump(tx_tasks, open("tx_records", "w+"))
-  puts "statistis ...".colorize(:yellow)
-  statistics(tx_tasks)
 end
 
 if __FILE__ == $0
@@ -254,6 +278,8 @@ if __FILE__ == $0
   run(api, from, txs_count)
   elsif command == "stat"
     puts "statistics..."
+    tx_tasks = Marshal.load(open("tx_records", "r"))
+    statistics(tx_tasks)
   else
     puts "unknown command #{command}"
     puts "try: bench.rb run <block height> <count of tx>"
