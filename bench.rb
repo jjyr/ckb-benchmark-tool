@@ -8,7 +8,9 @@ require 'colorize'
 require 'terminal-table'
 
 ALWAYS_SUCCESS = "0x0000000000000000000000000000000000000000000000000000000000000001".freeze
-PER_OUTPUT_CAPACITY = 128
+BIT = 100000000
+PER_OUTPUT_CAPACITY = 128 * BIT
+CELLBASE_REWARD = BIT * 50000
 
 class BlockTime
   attr_accessor :timestamp, :number
@@ -118,7 +120,7 @@ end
 
 def get_always_success_lock_hash(args: [])
   always_success_lock = {
-    binary_hash: ALWAYS_SUCCESS,
+    code_hash: ALWAYS_SUCCESS,
     args: args
   }
   CKB::Utils.json_script_to_type_hash(always_success_lock)
@@ -127,8 +129,8 @@ end
 def get_always_success_cellbase(api, from:, cap:)
   lock_hash = get_always_success_lock_hash
   cells = []
-  while cells.size * 50000 < cap
-    new_cells = api.get_cells_by_lock_hash(lock_hash, from.to_s, (from + 100).to_s).select {|c| c[:capacity] == 50000 }
+  while cells.size * CELLBASE_REWARD < cap
+    new_cells = api.get_cells_by_lock_hash(lock_hash, from.to_s, (from + 100).to_s).select {|c| c[:capacity].to_i == CELLBASE_REWARD }
     if new_cells.empty?
       puts "can't found enough cellbase #{cap}"
       exit 1
@@ -158,14 +160,14 @@ def prepare_cells(api, from, count, lock_id: )
     }
   end
 
-  total_cap = cells.map{|c| c[:capacity]}.sum
+  total_cap = cells.map{|c| c[:capacity].to_i}.sum
   per_output_cap = (total_cap / count).to_s
   outputs = count.times.map do |i|
     {
       capacity: per_output_cap,
       data: CKB::Utils.bin_to_hex("prepare_tx#{i}"),
       lock: {
-        binary_hash: ALWAYS_SUCCESS,
+        code_hash: ALWAYS_SUCCESS,
         args: [lock_id]
       }
     }
@@ -186,7 +188,7 @@ def send_txs(api, prepare_tx_hash, txs_count, lock_id: )
   txs = txs_count.times.map do |i|
     inputs = [
       {
-        previous_output: {hash: prepare_tx_hash, index: i},
+        previous_output: {tx_hash: prepare_tx_hash, index: i},
         args: [],
         since: "0"
       }
@@ -196,7 +198,7 @@ def send_txs(api, prepare_tx_hash, txs_count, lock_id: )
         capacity: PER_OUTPUT_CAPACITY.to_s,
         data: CKB::Utils.bin_to_hex(""),
         lock: {
-          binary_hash: ALWAYS_SUCCESS,
+          code_hash: ALWAYS_SUCCESS,
           args: [lock_id]
         }
       }
