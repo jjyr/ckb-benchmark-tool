@@ -211,16 +211,18 @@ def send_txs(api, prepare_tx_hash, txs_count, lock_id: )
     )
   end
   tip = api.get_tip_header
-  block_time = BlockTime.new(number: tip[:number].to_i, timestamp: tip[:timestamp].to_i)
   # sending
   tx_tasks = []
-  txs.each_with_index do |tx, i|
-    puts "sending tx #{i}/#{txs.size} ..."
-    begin
-      tx_hash = api.send_transaction(tx.to_h)
-      tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: block_time)
-    rescue StandardError => e
-      p e
+  txs.each_with_index.each_slice(100) do |batch|
+    block_time = BlockTime.new(number: tip[:number].to_i, timestamp: Time.new.to_i * 1000)
+    batch.each do |tx, i|
+      puts "sending tx #{i}/#{txs.size} ..."
+      begin
+        tx_hash = api.send_transaction(tx.to_h)
+        tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: block_time)
+      rescue StandardError => e
+        p e
+      end
     end
   end
   puts "send all transactions #{tx_tasks.size}/#{txs.size}"
