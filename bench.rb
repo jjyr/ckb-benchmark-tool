@@ -173,7 +173,7 @@ def prepare_cells(api, from, count, lock_id: )
 
   tx = CKB::Transaction.new(
     version: 0,
-    deps: [api.system_script_out_point],
+    deps: [],
     inputs: inputs,
     outputs: outputs,
     witnesses: [],
@@ -204,7 +204,7 @@ def send_txs(api, prepare_tx_hash, txs_count, lock_id: )
 
     CKB::Transaction.new(
       version: 0,
-      deps: [api.system_script_out_point],
+      deps: [],
       inputs: inputs,
       outputs: outputs,
       witnesses: [],
