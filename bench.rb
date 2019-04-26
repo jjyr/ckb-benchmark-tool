@@ -20,6 +20,10 @@ class BlockTime
     @number = number
   end
 
+  def <=>(other)
+    self.timestamp <=> other.timestamp
+  end
+
   def to_s
     "block #{number} #{timestamp}"
   end
@@ -212,11 +216,11 @@ def send_txs(api, prepare_tx_hash, txs_count, lock_id: )
       witnesses: [],
     )
   end
-  tip = api.get_tip_header
   # sending
   tx_tasks = []
-  txs.each_with_index.each_slice(100) do |batch|
-    block_time = BlockTime.new(number: tip[:number].to_i, timestamp: Time.new.to_i * 1000)
+  txs.each_with_index.each_slice(500) do |batch|
+    tip = api.get_tip_header
+    block_time = BlockTime.new(number: tip[:number].to_i, timestamp: tip[:timestamp].to_i)
     batch.each do |tx, i|
       puts "sending tx #{i}/#{txs.size} ..."
       begin
@@ -255,9 +259,9 @@ def statistics(tx_tasks)
   commit_times = tx_tasks.map{|t| t.committed_at.timestamp}.sort
   rows << ['Committed at', *calculate_row(commit_times).map{|t| t.infinite? ? t : Time.at(t.to_i)}]
   relative_times = tx_tasks.map{|t| t.proposed_at.timestamp - t.send_at.timestamp}.sort
-  rows << ['Until Proposed', *calculate_row(relative_times)]
+  rows << ['Per tx proposed', *calculate_row(relative_times)]
   relative_times = tx_tasks.map{|t| t.committed_at.timestamp - t.send_at.timestamp}.sort
-  rows << ['Until Committed', *calculate_row(relative_times)]
+  rows << ['Per tx committed', *calculate_row(relative_times)]
   table = Terminal::Table.new :headings => head, :rows => rows
   puts table
 end
