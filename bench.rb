@@ -250,8 +250,10 @@ def statistics(tx_tasks)
   rows << ['Proposed at', *calculate_row(propo_times).map{|t| t.infinite? ? t : Time.at(t.to_i)}]
   commit_times = tx_tasks.map{|t| t.committed_at.timestamp}.sort
   rows << ['Committed at', *calculate_row(commit_times).map{|t| t.infinite? ? t : Time.at(t.to_i)}]
+  relative_times = tx_tasks.map{|t| t.proposed_at.timestamp - t.send_at.timestamp}.sort
+  rows << ['Until Proposed', *calculate_row(relative_times)]
   relative_times = tx_tasks.map{|t| t.committed_at.timestamp - t.send_at.timestamp}.sort
-  rows << ['Committed after', *calculate_row(relative_times)]
+  rows << ['Until Committed', *calculate_row(relative_times)]
   table = Terminal::Table.new :headings => head, :rows => rows
   puts table
 end
@@ -279,10 +281,10 @@ def run(api, from, txs_count)
 end
 
 if __FILE__ == $0
-  api = CKB::API.new
   command, from, txs_count = ARGV[0], ARGV[1].to_i, ARGV[2].to_i
   if command == "run"
-  run(api, from, txs_count)
+    api = CKB::API.new
+    run(api, from, txs_count)
   elsif command == "stat"
     puts "statistics..."
     tx_tasks = Marshal.load(open("tx_records", "r"))
