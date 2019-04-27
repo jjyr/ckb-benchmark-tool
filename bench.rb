@@ -11,6 +11,7 @@ ALWAYS_SUCCESS = "0x000000000000000000000000000000000000000000000000000000000000
 BIT = 100000000
 PER_OUTPUT_CAPACITY = 128 * BIT
 CELLBASE_REWARD = BIT * 50000
+DEFAULT_STAT_FILE = "tx_records"
 
 class BlockTime
   attr_accessor :timestamp, :number
@@ -298,22 +299,25 @@ def run(api, from, txs_count)
   end
   puts "wait all txs get confirmed ...".colorize(:yellow)
   watch_pool.wait_all
-  puts "complete, saving to ./tx_records ...".colorize(:yellow)
-  Marshal.dump(tx_tasks, open("tx_records", "w+"))
+  puts "complete, saving to ./#{DEFAULT_STAT_FILE} ...".colorize(:yellow)
+  Marshal.dump(tx_tasks, open(DEFAULT_STAT_FILE, "w+"))
 end
 
 if __FILE__ == $0
-  command, from, txs_count = ARGV[0], ARGV[1].to_i, ARGV[2].to_i
+  command = ARGV[0]
   if command == "run"
+    from, txs_count = ARGV[1].to_i, ARGV[2].to_i
     api = CKB::API.new(host: ENV['API_URL'] || CKB::API::DEFAULT_URL)
     run(api, from, txs_count)
   elsif command == "stat"
-    puts "statistics..."
-    tx_tasks = Marshal.load(open("tx_records", "r"))
+    stat_file = ARGV[1] || DEFAULT_STAT_FILE
+    puts "statistics #{stat_file}..."
+    tx_tasks = Marshal.load(open(stat_file, "r"))
     statistics(tx_tasks)
   else
     puts "unknown command #{command}"
-    puts "try: bench.rb run <block height> <count of tx>"
+    puts "try run benchmark: bench.rb run <block height> <count of tx>"
     puts "example: bench.rb run 23005 20"
+    puts "try run stat: bench.rb stat <file>"
   end
 end
