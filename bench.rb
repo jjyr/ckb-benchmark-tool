@@ -68,16 +68,22 @@ class WatchPool
     block = @api.get_block(block_hash)
     header = block[:header]
     block_time = BlockTime.new(number: header[:number].to_i, timestamp: header[:timestamp].to_i)
-    block[:proposals].each do |proposal_id|
+    proposed_count = block[:proposals].select do |proposal_id|
       mark_proposed proposal_id, block_time
-    end
-    block[:uncles].each do |uncle|
-      uncle[:proposals].each do |proposal_id|
+    end.count
+    proposed_count += block[:uncles].map do |uncle|
+      uncle[:proposals].select do |proposal_id|
         mark_proposed proposal_id, block_time
-      end
+      end.count
+    end.sum
+    if proposed_count > 0
+      puts "#{proposed_count} txs get proposed".colorize(:green)
     end
-    block[:transactions].each do |tx|
+    committed_count = block[:transactions].select do |tx|
       mark_committed tx[:hash], block_time
+    end.count
+    if committed_count > 0
+      puts "#{committed_count} txs get committed".colorize(:green)
     end
     @height += 1
     true
@@ -105,7 +111,10 @@ class WatchPool
       raise "fuck, should not happen" if tx_task.nil?
       tx_task.proposed_at = block_time
       @proposed[tx_hash] = tx_task
-      puts "tx #{tx_hash} get proposed at #{block_time}".colorize(:green)
+      # puts "tx #{tx_hash} get proposed at #{block_time}".colorize(:green)
+      true
+    else
+      false
     end
   end
 
@@ -113,7 +122,10 @@ class WatchPool
     if (tx_task = @proposed.delete tx_hash)
       tx_task.committed_at = block_time
       @committed[tx_hash] = tx_task
-      puts "tx #{tx_hash} get commited at #{block_time}".colorize(:green)
+      # puts "tx #{tx_hash} get commited at #{block_time}".colorize(:green)
+      true
+    else
+      false
     end
   end
 end
@@ -242,8 +254,7 @@ def calculate_row(times)
   f_20  = times[f_range].sum / f_range.size.to_f
   s_range = -(times.size / 5)..-1
   s_20  = times[s_range].sum / s_range.size.to_f
-  tps = times.size / (times[-1] - times[0]).to_f
-  [avg, median, f_20, s_20, tps]
+  [avg, median, f_20, s_20]
 end
 
 def statistics(tx_tasks)
@@ -255,13 +266,16 @@ def statistics(tx_tasks)
   head = ['type', 'avg', 'median', 'fastest 20%', 'slowest 20%', 'tps']
   rows = []
   propo_times = tx_tasks.map{|t| t.proposed_at.timestamp}.sort
-  rows << ['Proposed at', *calculate_row(propo_times).map{|t| t.infinite? ? t : Time.at(t.to_i)}]
+  last_proposed = tx_tasks.sort_by(&:proposed_at).last
+  propo_tps = propo_times.size / (last_proposed.proposed_at.timestamp - first_send.send_at.timestamp)
+  rows << ['Proposed at', *calculate_row(propo_times).map{|t| t.infinite? ? t : Time.at(t.to_i)}, propo_tps]
   commit_times = tx_tasks.map{|t| t.committed_at.timestamp}.sort
-  rows << ['Committed at', *calculate_row(commit_times).map{|t| t.infinite? ? t : Time.at(t.to_i)}]
+  commit_tps = tx_tasks.size / (last_committed.committed_at.timestamp - first_send.send_at.timestamp)
+  rows << ['Committed at', *calculate_row(commit_times).map{|t| t.infinite? ? t : Time.at(t.to_i)}, commit_tps]
   relative_times = tx_tasks.map{|t| t.proposed_at.timestamp - t.send_at.timestamp}.sort
-  rows << ['Per tx proposed', *calculate_row(relative_times)]
+  rows << ['Per tx proposed', *calculate_row(relative_times), propo_tps]
   relative_times = tx_tasks.map{|t| t.committed_at.timestamp - t.send_at.timestamp}.sort
-  rows << ['Per tx committed', *calculate_row(relative_times)]
+  rows << ['Per tx committed', *calculate_row(relative_times), commit_tps]
   table = Terminal::Table.new :headings => head, :rows => rows
   puts table
 end
@@ -291,7 +305,7 @@ end
 if __FILE__ == $0
   command, from, txs_count = ARGV[0], ARGV[1].to_i, ARGV[2].to_i
   if command == "run"
-    api = CKB::API.new
+    api = CKB::API.new(host: ENV['API_URL'] || CKB::API::DEFAULT_URL)
     run(api, from, txs_count)
   elsif command == "stat"
     puts "statistics..."

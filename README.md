@@ -16,6 +16,8 @@ cd ckb-benchmark-tool && bundle install
 2, Send transactions
 
 ```
+# use ENV variable to specific API endpoint, default is http://localhost:8114 
+# API_URL=http://192.168.2.134:8114
 ./bench.rb run <block_number> <txs_count>
 ```
 
