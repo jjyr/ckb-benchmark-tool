@@ -201,7 +201,7 @@ def prepare_cells(api, from, count, lock_id: )
   TxTask.new(tx_hash: tx_hash, send_at: send_time)
 end
 
-def send_txs(api, prepare_tx_hash, txs_count, lock_id: )
+def send_txs(apis, prepare_tx_hash, txs_count, lock_id: )
   txs = txs_count.times.map do |i|
     inputs = [
       {
@@ -230,20 +230,27 @@ def send_txs(api, prepare_tx_hash, txs_count, lock_id: )
     )
   end
   # sending
-  tx_tasks = []
-  txs.each_with_index.each_slice(500) do |batch|
-    tip = api.get_tip_header
-    block_time = BlockTime.new(number: tip[:number].to_i, timestamp: tip[:timestamp].to_i)
-    batch.each do |tx, i|
-      puts "sending tx #{i}/#{txs.size} ..."
-      begin
-        tx_hash = api.send_transaction(tx.to_h)
-        tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: block_time)
-      rescue StandardError => e
-        p e
+  puts "start #{apis.size} threads.."
+  threads = txs.each_slice(txs.size / apis.size).each_with_index.map do |txs, worker_id|
+    Thread.new(txs, worker_id, apis[worker_id]) do |txs, worker_id, api|
+      tx_tasks = []
+      txs.each_with_index.each_slice(500) do |batch|
+        tip = api.get_tip_header
+        block_time = BlockTime.new(number: tip[:number].to_i, timestamp: tip[:timestamp].to_i)
+        batch.each do |tx, i|
+          print ".".colorize(:green)
+          begin
+            tx_hash = api.send_transaction(tx.to_h)
+            tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: block_time)
+          rescue StandardError => e
+            p "worker #{worker_id}: #{e}".colorize(:red)
+          end
+        end
       end
+      tx_tasks
     end
   end
+  tx_tasks = threads.map(&:value).reduce(&:+)
   puts "send all transactions #{tx_tasks.size}/#{txs.size}"
   tx_tasks
 end
@@ -281,7 +288,8 @@ def statistics(tx_tasks)
   puts table
 end
 
-def run(api, from, txs_count)
+def run(apis, from, txs_count)
+  api = apis[0]
   tip = api.get_tip_header
   watch_pool = WatchPool.new(api, tip[:number].to_i)
   lock_id = random_lock_id
@@ -293,7 +301,7 @@ def run(api, from, txs_count)
   puts tx_task
   watch_pool.wait(tx_task.tx_hash)
   puts "start sending #{txs_count} txs...".colorize(:yellow)
-  tx_tasks = send_txs(api, tx_task.tx_hash, txs_count, lock_id: lock_id)
+  tx_tasks = send_txs(apis, tx_task.tx_hash, txs_count, lock_id: lock_id)
   tx_tasks.each do |task|
     watch_pool.add task.tx_hash, task
   end
@@ -307,8 +315,9 @@ if __FILE__ == $0
   command = ARGV[0]
   if command == "run"
     from, txs_count = ARGV[1].to_i, ARGV[2].to_i
-    api = CKB::API.new(host: ENV['API_URL'] || CKB::API::DEFAULT_URL)
-    run(api, from, txs_count)
+    api_url = ENV['API_URL'] || CKB::API::DEFAULT_URL
+    apis = api_url.split("|").map {|url| CKB::API.new(host: url)}
+    run(apis, from, txs_count)
   elsif command == "stat"
     stat_file = ARGV[1] || DEFAULT_STAT_FILE
     puts "statistics #{stat_file}..."
