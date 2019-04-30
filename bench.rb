@@ -8,7 +8,7 @@ require 'colorize'
 require 'terminal-table'
 
 ALWAYS_SUCCESS = "0x0000000000000000000000000000000000000000000000000000000000000001".freeze
-BIT = 100000000
+BIT = 100_000_000
 PER_OUTPUT_CAPACITY = 128 * BIT
 CELLBASE_REWARD = BIT * 50000
 DEFAULT_STAT_FILE = "tx_records"
@@ -147,7 +147,7 @@ def get_always_success_cellbase(api, from:, cap:)
   lock_hash = get_always_success_lock_hash
   cells = []
   while cells.size * CELLBASE_REWARD < cap
-    new_cells = api.get_cells_by_lock_hash(lock_hash, from.to_s, (from + 100).to_s).select {|c| c[:capacity].to_i == CELLBASE_REWARD }
+    new_cells = api.get_cells_by_lock_hash(lock_hash, from.to_s, (from + 10).to_s).select {|c| c[:capacity].to_i == CELLBASE_REWARD }
     if new_cells.empty?
       puts "can't found enough cellbase #{cap}"
       exit 1
