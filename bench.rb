@@ -153,7 +153,7 @@ def get_always_success_cellbase(api, from:, cap:)
       exit 1
     end
     cells += new_cells
-    from += 100
+    from += 10
   end
   cells
 end
