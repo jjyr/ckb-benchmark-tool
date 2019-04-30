@@ -229,22 +229,30 @@ def send_txs(apis, prepare_tx_hash, txs_count, lock_id: )
       witnesses: [],
     )
   end
+  queue = Queue.new()
+  txs.each{|tx| queue.push tx}
   # sending
   puts "start #{apis.size} threads.."
-  threads = txs.each_slice(txs.size / apis.size).each_with_index.map do |txs, worker_id|
-    Thread.new(txs, worker_id, apis[worker_id]) do |txs, worker_id, api|
+  tip = apis[0].get_tip_header
+  threads = apis.each_with_index.map do |api, worker_id|
+    Thread.new(worker_id, api, tip) do |worker_id, api, tip|
       tx_tasks = []
-      txs.each_with_index.each_slice(500) do |batch|
-        tip = api.get_tip_header
-        block_time = BlockTime.new(number: tip[:number].to_i, timestamp: tip[:timestamp].to_i)
-        batch.each do |tx, i|
-          print ".".colorize(:green)
-          begin
-            tx_hash = api.send_transaction(tx.to_h)
-            tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: block_time)
-          rescue StandardError => e
-            p "worker #{worker_id}: #{e}".colorize(:red)
+      count = 0
+      while tx = (queue.pop(true) rescue nil)
+        count += 1
+        if count % 100 == 0
+          new_tip = api.get_tip_header 
+          if new_tip[:timestamp].to_i > tip[:timestamp].to_i
+            tip = new_tip
           end
+        end
+        block_time = BlockTime.new(number: tip[:number].to_i, timestamp: tip[:timestamp].to_i)
+        print ".".colorize(:green)
+        begin
+          tx_hash = api.send_transaction(tx.to_h)
+          tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: block_time)
+        rescue StandardError => e
+          p "worker #{worker_id}: #{e}".colorize(:red)
         end
       end
       tx_tasks
@@ -322,6 +330,7 @@ if __FILE__ == $0
     stat_file = ARGV[1] || DEFAULT_STAT_FILE
     puts "statistics #{stat_file}..."
     tx_tasks = Marshal.load(open(stat_file, "r"))
+    p tx_tasks.sort_by{|tx| tx.committed_at.timestamp - tx.proposed_at.timestamp}[-1]
     statistics(tx_tasks)
   else
     puts "unknown command #{command}"
