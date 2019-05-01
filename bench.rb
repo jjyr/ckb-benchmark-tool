@@ -146,14 +146,14 @@ end
 def get_always_success_cellbase(api, from:, cap:)
   lock_hash = get_always_success_lock_hash
   cells = []
-  while cells.size * CELLBASE_REWARD < cap
-    new_cells = api.get_cells_by_lock_hash(lock_hash, from.to_s, (from + 10).to_s).select {|c| c[:capacity].to_i == CELLBASE_REWARD }
+  while cells.map{|c| c[:capacity].to_i - c[:capacity].to_i % PER_OUTPUT_CAPACITY}.sum < cap
+    new_cells = api.get_cells_by_lock_hash(lock_hash, from.to_s, (from + 20).to_s)
     if new_cells.empty?
-      puts "can't found enough cellbase #{cap}"
+      puts "can't found enough cellbase #{cap} from #{api.inspect} #{cells}"
       exit 1
     end
     cells += new_cells
-    from += 10
+    from += 20
   end
   cells
 end
@@ -169,43 +169,49 @@ def prepare_cells(api, from, count, lock_id: )
   tip = api.get_tip_header
   send_time = BlockTime.new(number: tip[:number].to_i, timestamp: tip[:timestamp].to_i)
 
-  inputs = cells.map do |cell|
-    {
-      previous_output: cell[:out_point],
-      args: [],
-      since: "0",
-    }
-  end
-
-  total_cap = cells.map{|c| c[:capacity].to_i}.sum
-  per_output_cap = (total_cap / count).to_s
-  outputs = count.times.map do |i|
-    {
-      capacity: per_output_cap,
-      data: CKB::Utils.bin_to_hex("prepare_tx#{i}"),
-      lock: {
-        code_hash: ALWAYS_SUCCESS,
-        args: [lock_id]
+  tx_tasks = []
+  out_points = []
+  cells.each_slice(1).map do |cells|
+    inputs = cells.map do |cell|
+      {
+        previous_output: cell[:out_point],
+        args: [],
+        since: "0",
       }
-    }
-  end
+    end
 
-  tx = CKB::Transaction.new(
-    version: 0,
-    deps: [],
-    inputs: inputs,
-    outputs: outputs,
-    witnesses: [],
-  )
-  tx_hash = api.send_transaction(tx.to_h)
-  TxTask.new(tx_hash: tx_hash, send_at: send_time)
+    total_cap = cells.map{|c| c[:capacity].to_i}.sum
+    # per_output_cap = (total_cap / count).to_s
+    outputs = (total_cap / PER_OUTPUT_CAPACITY).times.map do |i|
+      {
+        capacity: PER_OUTPUT_CAPACITY.to_s,
+        data: CKB::Utils.bin_to_hex("prepare_tx#{i}"),
+        lock: {
+          code_hash: ALWAYS_SUCCESS,
+          args: [lock_id]
+        }
+      }
+    end
+
+    tx = CKB::Transaction.new(
+      version: 0,
+      deps: [],
+      inputs: inputs,
+      outputs: outputs,
+      witnesses: [],
+    )
+    tx_hash = api.send_transaction(tx.to_h)
+    out_points += outputs.count.times.map{|i| [tx_hash, i]}
+    tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: send_time)
+  end
+  [tx_tasks, out_points]
 end
 
-def send_txs(apis, prepare_tx_hash, txs_count, lock_id: )
+def send_txs(apis, out_points, txs_count, lock_id: )
   txs = txs_count.times.map do |i|
     inputs = [
       {
-        previous_output: {tx_hash: prepare_tx_hash, index: i},
+        previous_output: {tx_hash: out_points[i][0], index: out_points[i][1]},
         args: [],
         since: "0"
       }
@@ -303,13 +309,15 @@ def run(apis, from, txs_count)
   lock_id = random_lock_id
   puts "generate random lock_id: #{lock_id}"
   puts "prepare #{txs_count} benchmark cells from height #{from}".colorize(:yellow)
-  tx_task = prepare_cells(api, from, txs_count, lock_id: lock_id)
-  watch_pool.add(tx_task.tx_hash, tx_task)
+  tx_tasks, out_points = prepare_cells(api, from, txs_count, lock_id: lock_id)
+  tx_tasks.each do |tx_task|
+    watch_pool.add(tx_task.tx_hash, tx_task)
+  end
   puts "wait prepare tx get confirmed ...".colorize(:yellow)
-  puts tx_task
-  watch_pool.wait(tx_task.tx_hash)
+  puts tx_tasks
+  watch_pool.wait_all
   puts "start sending #{txs_count} txs...".colorize(:yellow)
-  tx_tasks = send_txs(apis, tx_task.tx_hash, txs_count, lock_id: lock_id)
+  tx_tasks = send_txs(apis, out_points, txs_count, lock_id: lock_id)
   tx_tasks.each do |task|
     watch_pool.add task.tx_hash, task
   end
@@ -322,15 +330,34 @@ end
 if __FILE__ == $0
   command = ARGV[0]
   if command == "run"
-    from, txs_count = ARGV[1].to_i, ARGV[2].to_i
-    api_url = ENV['API_URL'] || CKB::API::DEFAULT_URL
-    apis = api_url.split("|").map {|url| CKB::API.new(host: url)}
+    from, txs_count, server_list = ARGV[1].to_i, ARGV[2].to_i, ARGV[3]
+    apis = if server_list
+             server_list = open(server_list).read
+             server_ips = server_list.gsub(/\d+\.\d+\.\d+\.\d+/)
+             api_tests = server_ips.to_a.product([8122, 8121]).map do |ip, port| 
+               Thread.new do
+                 begin
+                   api = Timeout.timeout(5) do
+                     CKB::API.new(host: "http://#{ip}:#{port}")
+                   end 
+                   print "*"
+                   api
+                 rescue StandardError => _e
+                   print "x"
+                   nil
+                 end
+               end
+             end
+             api_tests.map(&:value).reject(&:nil?).shuffle
+           else
+             api_url = ENV['API_URL'] || CKB::API::DEFAULT_URL
+             api_url.split("|").map {|url| CKB::API.new(host: url)}
+           end
     run(apis, from, txs_count)
   elsif command == "stat"
     stat_file = ARGV[1] || DEFAULT_STAT_FILE
     puts "statistics #{stat_file}..."
     tx_tasks = Marshal.load(open(stat_file, "r"))
-    p tx_tasks.sort_by{|tx| tx.committed_at.timestamp - tx.proposed_at.timestamp}[-1]
     statistics(tx_tasks)
   else
     puts "unknown command #{command}"
