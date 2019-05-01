@@ -236,7 +236,7 @@ def send_txs(apis, out_points, txs_count, lock_id: )
 
     CKB::Transaction.new(
       version: 0,
-      deps: [],
+      deps: [apis[0].system_script_out_point],
       inputs: inputs,
       outputs: outputs,
       witnesses: [],
@@ -289,6 +289,7 @@ end
 def statistics(tx_tasks)
   puts "Total: #{tx_tasks.size}"
   first_send = tx_tasks.sort_by(&:send_at).first
+  tx_tasks.reject! {|tx| tx.committed_at.nil?}
   last_committed = tx_tasks.sort_by(&:committed_at).last
   puts "Total TPS: #{tx_tasks.size / (last_committed.committed_at.timestamp - first_send.send_at.timestamp)}"
   # proposals
