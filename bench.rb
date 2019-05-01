@@ -77,17 +77,11 @@ class WatchPool
         mark_proposed proposal_id, block_time
       end.count
     end.sum
-    if proposed_count > 0
-      puts "#{proposed_count} txs get proposed".colorize(:green)
-    end
     committed_count = block[:transactions].select do |tx|
       mark_committed tx[:hash], block_time
     end.count
-    if committed_count > 0
-      puts "#{committed_count} txs get committed".colorize(:green)
-    end
     @height += 1
-    true
+    [proposed_count, committed_count]
   end
 
   def wait(tx_hash)
@@ -98,8 +92,20 @@ class WatchPool
   end
 
   def wait_all
+    total_proposed_count = 0
+    total_committed_count = 0
+    total_waits = @initial.count
     loop do
-      sleep 3 unless poll
+      if (result = poll)
+        proposed_count, committed_count = result
+        if proposed_count > 0 || committed_count > 0
+          total_proposed_count += proposed_count
+          total_committed_count += committed_count
+          puts "#{proposed_count} txs proposed(#{total_proposed_count}/#{total_waits}), #{committed_count} txs committed(#{total_committed_count}/#{total_waits})".colorize(:green)
+        end
+      else
+        sleep 3
+      end
       return if @initial.empty? && @proposed.empty?
     end
   end
@@ -354,6 +360,8 @@ if __FILE__ == $0
              api_url = ENV['API_URL'] || CKB::API::DEFAULT_URL
              api_url.split("|").map {|url| CKB::API.new(host: url)}
            end
+    puts "use #{apis.size} servers to run benchmark"
+    p apis
     run(apis, from, txs_count)
   elsif command == "stat"
     stat_file = ARGV[1] || DEFAULT_STAT_FILE
