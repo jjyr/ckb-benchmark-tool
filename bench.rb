@@ -290,8 +290,14 @@ def statistics(tx_tasks)
   puts "Total: #{tx_tasks.size}"
   first_send = tx_tasks.sort_by(&:send_at).first
   tx_tasks.reject! {|tx| tx.committed_at.nil?}
-  last_committed = tx_tasks.sort_by(&:committed_at).last
+  # sort txs for calculation
+  tx_tasks.sort_by!(&:committed_at)
+  last_committed = tx_tasks.last
   puts "Total TPS: #{tx_tasks.size / (last_committed.committed_at.timestamp - first_send.send_at.timestamp)}"
+  [20, 40, 60, 80].each do |batch|
+    batch_size = tx_tasks.size * batch / 100
+    puts "#{batch}% TPS: #{batch_size / (tx_tasks[batch_size - 1].committed_at.timestamp - tx_tasks[0...batch_size].map{|tx| tx.send_at.timestamp}.sort.first)}"
+  end
   # proposals
   head = ['type', 'avg', 'median', 'fastest 20%', 'slowest 20%', 'tps']
   rows = []
