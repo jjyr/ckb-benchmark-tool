@@ -143,15 +143,16 @@ def get_always_success_lock_hash(args: [])
   CKB::Utils.json_script_to_type_hash(always_success_lock)
 end
 
-def get_always_success_cellbase(api, from:, cap:)
+def get_always_success_cellbase(api, from:, tx_count:)
   lock_hash = get_always_success_lock_hash
   cells = []
-  while cells.map{|c| c[:capacity].to_i - c[:capacity].to_i % PER_OUTPUT_CAPACITY}.sum < cap
+  while cells.map{|c| c[:capacity].to_i / PER_OUTPUT_CAPACITY}.sum < tx_count
     new_cells = api.get_cells_by_lock_hash(lock_hash, from.to_s, (from + 20).to_s)
     if new_cells.empty?
-      puts "can't found enough cellbase #{cap} from #{api.inspect} #{cells}"
+      puts "can't found enough cellbase #{tx_count} from #{api.inspect} #{cells}"
       exit 1
     end
+    new_cells.reject!{|c| c[:capacity].to_i < PER_OUTPUT_CAPACITY }
     cells += new_cells
     from += 20
   end
@@ -159,7 +160,7 @@ def get_always_success_cellbase(api, from:, cap:)
 end
 
 def prepare_cells(api, from, count, lock_id: )
-  cells = get_always_success_cellbase(api, from: from, cap: count * PER_OUTPUT_CAPACITY)
+  cells = get_always_success_cellbase(api, from: from, tx_count: count)
   if cells.empty?
     puts "can't find cellbase in #{from}"
     exit 1
