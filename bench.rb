@@ -40,6 +40,10 @@ class TxTask
     @committed_at = committed_at
   end
 
+  def ==(other)
+    tx_hash == other.tx_hash
+  end
+
   def to_s
     "task #{tx_hash} send_at #{send_at} proposed_at #{proposed_at} committed_at #{committed_at}"
   end
@@ -159,7 +163,8 @@ def get_always_success_cellbase(api, from:, tx_count:)
       exit 1
     end
     new_cells.reject!{|c| c[:capacity].to_i < PER_OUTPUT_CAPACITY }
-    cells += new_cells
+    cells.concat(new_cells)
+    cells.uniq!
     from += 20
   end
   cells
