@@ -50,8 +50,8 @@ class TxTask
 end
 
 class WatchPool
-  def initialize(api, height)
-    @api = api
+  def initialize(apis, height)
+    @apis = apis
     @height = height
     @initial = {}
     @short_id = {}
@@ -65,12 +65,13 @@ class WatchPool
   end
 
   def poll
-    block_hash = @api.get_block_hash((@height + 1).to_s)
+    api = @apis.sample
+    block_hash = api.get_block_hash((@height + 1).to_s)
     puts "check block #{@height + 1} #{block_hash}"
     if block_hash.nil?
       return false
     end
-    block = @api.get_block(block_hash)
+    block = api.get_block(block_hash)
     header = block[:header]
     block_time = BlockTime.new(number: header[:number].to_i, timestamp: header[:timestamp].to_i)
     proposed_count = block[:proposals].select do |proposal_id|
@@ -324,7 +325,7 @@ end
 def run(apis, from, txs_count)
   api = apis[0]
   tip = api.get_tip_header
-  watch_pool = WatchPool.new(api, tip[:number].to_i)
+  watch_pool = WatchPool.new(apis, tip[:number].to_i)
   lock_id = random_lock_id
   puts "generate random lock_id: #{lock_id}"
   puts "prepare #{txs_count} benchmark cells from height #{from}".colorize(:yellow)
@@ -350,17 +351,18 @@ if __FILE__ == $0
   command = ARGV[0]
   if command == "run"
     from, txs_count, server_list = ARGV[1].to_i, ARGV[2].to_i, ARGV[3]
-    apis = if server_list
+    apis_tips = if server_list
              server_list = open(server_list).read
              server_ips = server_list.gsub(/\d+\.\d+\.\d+\.\d+/)
              api_tests = server_ips.to_a.product([8122, 8121]).map do |ip, port| 
                Thread.new do
                  begin
-                   api = Timeout.timeout(5) do
-                     CKB::API.new(host: "http://#{ip}:#{port}")
+                   api_with_tip = Timeout.timeout(10) do
+                     api = CKB::API.new(host: "http://#{ip}:#{port}")
+                     [api, api.get_tip_header[:number].to_i]
                    end 
                    print "*"
-                   api
+                   api_with_tip
                  rescue StandardError => _e
                    print "x"
                    nil
@@ -370,9 +372,15 @@ if __FILE__ == $0
              api_tests.map(&:value).reject(&:nil?).shuffle
            else
              api_url = ENV['API_URL'] || CKB::API::DEFAULT_URL
-             api_url.split("|").map {|url| CKB::API.new(host: url)}
+             api_url.split("|").map do |url| 
+               api = CKB::API.new(host: url)
+               [api, api.get_tip_header[:number].to_i]
+             end
            end
-    puts "use #{apis.size} servers to run benchmark"
+    tips = apis_tips.map{|api, tip| tip}.sort
+    median_tip = tips[tips.size / 2]
+    apis = apis_tips.select{|api, tip| tip >= median_tip}.map{|api, _| api}
+    puts "\nuse #{apis.size} servers to run benchmark"
     p apis
     run(apis, from, txs_count)
   elsif command == "stat"
