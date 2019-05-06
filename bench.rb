@@ -9,7 +9,8 @@ require 'terminal-table'
 
 ALWAYS_SUCCESS = "0x0000000000000000000000000000000000000000000000000000000000000001".freeze
 BIT = 100_000_000
-PER_OUTPUT_CAPACITY = 128 * BIT
+PURE_TX_CAPACITY = 128 * BIT
+SECP_TX_CAPACITY = 336 * BIT
 CELLBASE_REWARD = BIT * 50000
 DEFAULT_STAT_FILE = "tx_records"
 
@@ -157,13 +158,13 @@ end
 def get_always_success_cellbase(api, from:, tx_count:)
   lock_hash = get_always_success_lock_hash
   cells = []
-  while cells.map{|c| c[:capacity].to_i / PER_OUTPUT_CAPACITY}.sum < tx_count
+  while cells.map{|c| c[:capacity].to_i / SECP_TX_CAPACITY}.sum < tx_count
     new_cells = api.get_cells_by_lock_hash(lock_hash, from.to_s, (from + 20).to_s)
     if new_cells.empty?
       puts "can't found enough cellbase #{tx_count} from #{api.inspect} #{cells}"
       exit 1
     end
-    new_cells.reject!{|c| c[:capacity].to_i < PER_OUTPUT_CAPACITY }
+    new_cells.reject!{|c| c[:capacity].to_i < SECP_TX_CAPACITY }
     cells.concat(new_cells)
     cells.uniq!
     from += 20
@@ -171,7 +172,69 @@ def get_always_success_cellbase(api, from:, tx_count:)
   cells
 end
 
-def prepare_cells(api, from, count, lock_id: )
+def build_secp_prepare_tx cells, addr, lock_script_hash:
+  inputs = cells.map do |cell|
+    {
+      previous_output: cell[:out_point],
+      args: [],
+      since: "0",
+    }
+  end
+
+  total_cap = cells.map{|c| c[:capacity].to_i}.sum
+  # to build 2-in-2-out tx
+  per_cell_cap = SECP_TX_CAPACITY / 2
+  outputs = (total_cap / per_cell_cap).times.map do |i|
+    {
+      capacity: per_cell_cap.to_s,
+      data: "0x".b,
+      lock: CKB::Utils.generate_lock(
+        addr, 
+        lock_script_hash
+      )
+    }
+  end
+
+  CKB::Transaction.new(
+    version: 0,
+    deps: [],
+    inputs: inputs,
+    outputs: outputs,
+    witnesses: [],
+  )
+end
+
+def build_prepare_tx cells
+  inputs = cells.map do |cell|
+    {
+      previous_output: cell[:out_point],
+      args: [],
+      since: "0",
+    }
+  end
+
+  total_cap = cells.map{|c| c[:capacity].to_i}.sum
+  outputs = (total_cap / PURE_TX_CAPACITY).times.map do |i|
+    {
+      capacity: PURE_TX_CAPACITY.to_s,
+      data: CKB::Utils.bin_to_hex("prepare_tx#{i}"),
+      lock: {
+        code_hash: ALWAYS_SUCCESS,
+        args: []
+      }
+    }
+  end
+
+  CKB::Transaction.new(
+    version: 0,
+    deps: [],
+    inputs: inputs,
+    outputs: outputs,
+    witnesses: [],
+  )
+end
+
+def prepare_cells(api, from, count, lock_addr: )
   cells = get_always_success_cellbase(api, from: from, tx_count: count)
   if cells.empty?
     puts "can't find cellbase in #{from}"
@@ -185,68 +248,52 @@ def prepare_cells(api, from, count, lock_id: )
   tx_tasks = []
   out_points = []
   cells.each_slice(1).map do |cells|
-    inputs = cells.map do |cell|
-      {
-        previous_output: cell[:out_point],
-        args: [],
-        since: "0",
-      }
-    end
-
-    total_cap = cells.map{|c| c[:capacity].to_i}.sum
-    # per_output_cap = (total_cap / count).to_s
-    outputs = (total_cap / PER_OUTPUT_CAPACITY).times.map do |i|
-      {
-        capacity: PER_OUTPUT_CAPACITY.to_s,
-        data: CKB::Utils.bin_to_hex("prepare_tx#{i}"),
-        lock: {
-          code_hash: ALWAYS_SUCCESS,
-          args: [lock_id]
-        }
-      }
-    end
-
-    tx = CKB::Transaction.new(
-      version: 0,
-      deps: [],
-      inputs: inputs,
-      outputs: outputs,
-      witnesses: [],
-    )
+    tx = build_secp_prepare_tx cells, lock_addr, lock_script_hash: api.system_script_cell_hash
     tx_hash = api.send_transaction(tx.to_h)
-    out_points += outputs.count.times.map{|i| [tx_hash, i]}
+    out_points += tx.outputs.count.times.map{|i| [tx_hash, i]}
     tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: send_time)
   end
   [tx_tasks, out_points]
 end
 
-def send_txs(apis, out_points, txs_count, lock_id: )
+def send_txs(apis, out_points, txs_count, unlock_key:, lock_hash:)
   txs = txs_count.times.map do |i|
+    # two inputs: i * 2 and i * 2 + 1
     inputs = [
       {
-        previous_output: {tx_hash: out_points[i][0], index: out_points[i][1]},
+        previous_output: {tx_hash: out_points[i * 2][0], index: out_points[i * 2][1]},
+        args: [],
+        since: "0"
+      },
+      {
+        previous_output: {tx_hash: out_points[i * 2 + 1][0], index: out_points[i * 2 + 1][1]},
         args: [],
         since: "0"
       }
     ]
+    per_cell_cap = SECP_TX_CAPACITY / 2
     outputs = [
       {
-        capacity: PER_OUTPUT_CAPACITY.to_s,
+        capacity: per_cell_cap.to_s,
         data: CKB::Utils.bin_to_hex(""),
-        lock: {
-          code_hash: ALWAYS_SUCCESS,
-          args: [lock_id]
-        }
+        lock: lock_hash
+      },
+      {
+        capacity: per_cell_cap.to_s,
+        data: CKB::Utils.bin_to_hex(""),
+        lock: lock_hash
       }
     ]
 
-    CKB::Transaction.new(
+    tx = CKB::Transaction.new(
       version: 0,
       deps: [apis[0].system_script_out_point],
       inputs: inputs,
       outputs: outputs,
       witnesses: [],
     )
+    tx.sign(unlock_key)
+    tx
   end
   queue = Queue.new()
   txs.each{|tx| queue.push tx}
@@ -326,10 +373,11 @@ def run(apis, from, txs_count)
   api = apis[0]
   tip = api.get_tip_header
   watch_pool = WatchPool.new(apis, tip[:number].to_i)
-  lock_id = random_lock_id
-  puts "generate random lock_id: #{lock_id}"
+  key = CKB::Key.new(CKB::Key.random_private_key)
+  puts "use random generated key #{key.pubkey}"
+  lock_addr = key.address.parse(key.address.generate)
   puts "prepare #{txs_count} benchmark cells from height #{from}".colorize(:yellow)
-  tx_tasks, out_points = prepare_cells(api, from, txs_count, lock_id: lock_id)
+  tx_tasks, out_points = prepare_cells(api, from, txs_count, lock_addr: lock_addr)
   tx_tasks.each do |tx_task|
     watch_pool.add(tx_task.tx_hash, tx_task)
   end
@@ -337,7 +385,10 @@ def run(apis, from, txs_count)
   puts tx_tasks
   watch_pool.wait_all
   puts "start sending #{txs_count} txs...".colorize(:yellow)
-  tx_tasks = send_txs(apis, out_points, txs_count, lock_id: lock_id)
+  lock_hash = CKB::Utils.generate_lock(
+    lock_addr, 
+    api.system_script_cell_hash)
+  tx_tasks = send_txs(apis, out_points, txs_count, unlock_key: key, lock_hash: lock_hash)
   tx_tasks.each do |task|
     watch_pool.add task.tx_hash, task
   end
