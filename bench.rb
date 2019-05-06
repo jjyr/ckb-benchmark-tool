@@ -293,7 +293,6 @@ def send_txs(apis, out_points, txs_count, unlock_key:, lock_hash:)
       witnesses: [],
     )
     tx.sign(unlock_key)
-    tx
   end
   queue = Queue.new()
   txs.each{|tx| queue.push tx}
