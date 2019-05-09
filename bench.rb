@@ -168,7 +168,7 @@ def get_always_success_cellbase(api, from:, tx_count:)
     end
     new_cells.reject!{|c| c.capacity < SECP_TX_CAPACITY }
     cells.concat(new_cells)
-    cells.uniq!
+    cells.uniq! {|c| c.out_point.to_h}
     from += 20
   end
   cells
@@ -247,6 +247,11 @@ def prepare_cells(api, from, count, lock_addr: )
   tip = api.get_tip_header
   send_time = BlockTime.new(number: tip.number.to_i, timestamp: tip.timestamp.to_i)
 
+  if cells.uniq{|c| c.out_point.to_h}.size != cells.size
+    pp cells
+    raise "error detect! dup cells #{cells.size - cells.uniq{|c| c.out_point.to_h}.size}"
+  end
+
   tx_tasks = []
   out_points = []
   cells.each_slice(1).map do |cells|
@@ -297,6 +302,7 @@ def send_txs(apis, out_points, txs_count, unlock_key:, lock_script:)
     )
     tx.sign(unlock_key)
   end
+
   queue = Queue.new()
   txs.each{|tx| queue.push tx}
   # sending
