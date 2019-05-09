@@ -4,7 +4,7 @@ Benchmark CKB network TPS
 ## Setup
 
 ```
-git clone https://github.com/jjyr/ckb-benchmark-tool.git
+git clone https://github.com/nervosnetwork/ckb-benchmark-tool.git
 cd ckb-benchmark-tool && bundle install
 ```
 
