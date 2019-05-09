@@ -88,6 +88,9 @@ class WatchPool
     end.count
     @height += 1
     [proposed_count, committed_count]
+  rescue StandardError => e
+    warn "node #{api} fucked up, retry...#{e}"
+    retry
   end
 
   def wait(tx_hash)
@@ -307,7 +310,7 @@ def send_txs(apis, out_points, txs_count, unlock_key:, lock_script:)
         count += 1
         if count % 100 == 0
           new_tip = api.get_tip_header 
-          if new_tip[:timestamp].to_i > tip[:timestamp].to_i
+          if new_tip.timestamp.to_i > tip.timestamp.to_i
             tip = new_tip
           end
         end
