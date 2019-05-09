@@ -73,18 +73,18 @@ class WatchPool
       return false
     end
     block = api.get_block(block_hash)
-    header = block[:header]
-    block_time = BlockTime.new(number: header[:number].to_i, timestamp: header[:timestamp].to_i)
-    proposed_count = block[:proposals].select do |proposal_id|
+    header = block.header
+    block_time = BlockTime.new(number: header.number.to_i, timestamp: header.timestamp.to_i)
+    proposed_count = block.proposals.select do |proposal_id|
       mark_proposed proposal_id, block_time
     end.count
-    proposed_count += block[:uncles].map do |uncle|
-      uncle[:proposals].select do |proposal_id|
+    proposed_count += block.uncles.map do |uncle|
+      uncle.proposals.select do |proposal_id|
         mark_proposed proposal_id, block_time
       end.count
     end.sum
-    committed_count = block[:transactions].select do |tx|
-      mark_committed tx[:hash], block_time
+    committed_count = block.transactions.select do |tx|
+      mark_committed tx.hash, block_time
     end.count
     @height += 1
     [proposed_count, committed_count]
@@ -147,24 +147,23 @@ def random_lock_id
   "0x" + SecureRandom.hex
 end
 
-def get_always_success_lock_hash(args: [])
-  always_success_lock = {
+def get_always_success_lock_script(args: [])
+  CKB::Types::Script.new(
     code_hash: ALWAYS_SUCCESS,
     args: args
-  }
-  CKB::Utils.json_script_to_type_hash(always_success_lock)
+  )
 end
 
 def get_always_success_cellbase(api, from:, tx_count:)
-  lock_hash = get_always_success_lock_hash
+  lock_script = get_always_success_lock_script
   cells = []
-  while cells.map{|c| c[:capacity].to_i / SECP_TX_CAPACITY}.sum < tx_count
-    new_cells = api.get_cells_by_lock_hash(lock_hash, from.to_s, (from + 20).to_s)
+  while cells.map{|c| c.capacity / SECP_TX_CAPACITY}.sum < tx_count
+    new_cells = api.get_cells_by_lock_hash(lock_script.to_hash, from.to_s, (from + 20).to_s)
     if new_cells.empty?
       puts "can't found enough cellbase #{tx_count} from #{api.inspect} #{cells}"
       exit 1
     end
-    new_cells.reject!{|c| c[:capacity].to_i < SECP_TX_CAPACITY }
+    new_cells.reject!{|c| c.capacity < SECP_TX_CAPACITY }
     cells.concat(new_cells)
     cells.uniq!
     from += 20
@@ -174,28 +173,28 @@ end
 
 def build_secp_prepare_tx cells, addr, lock_script_hash:
   inputs = cells.map do |cell|
-    {
-      previous_output: cell[:out_point],
+    CKB::Types::Input.new(
+      previous_output: cell.out_point,
       args: [],
       since: "0",
-    }
+    )
   end
 
-  total_cap = cells.map{|c| c[:capacity].to_i}.sum
+  total_cap = cells.map{|c| c.capacity}.sum
   # to build 2-in-2-out tx
   per_cell_cap = SECP_TX_CAPACITY / 2
   outputs = (total_cap / per_cell_cap).times.map do |i|
-    {
+    CKB::Types::Output.new(
       capacity: per_cell_cap.to_s,
       data: "0x".b,
-      lock: CKB::Utils.generate_lock(
-        addr, 
-        lock_script_hash
+      lock: CKB::Types::Script.generate_lock(
+        addr,
+        lock_script_hash,
       )
-    }
+    )
   end
 
-  CKB::Transaction.new(
+  CKB::Types::Transaction.new(
     version: 0,
     deps: [],
     inputs: inputs,
@@ -243,7 +242,7 @@ def prepare_cells(api, from, count, lock_addr: )
   puts "found cellbases"
   # produce cells
   tip = api.get_tip_header
-  send_time = BlockTime.new(number: tip[:number].to_i, timestamp: tip[:timestamp].to_i)
+  send_time = BlockTime.new(number: tip.number.to_i, timestamp: tip.timestamp.to_i)
 
   tx_tasks = []
   out_points = []
@@ -256,37 +255,38 @@ def prepare_cells(api, from, count, lock_addr: )
   [tx_tasks, out_points]
 end
 
-def send_txs(apis, out_points, txs_count, unlock_key:, lock_hash:)
+def send_txs(apis, out_points, txs_count, unlock_key:, lock_script:)
   txs = txs_count.times.map do |i|
     # two inputs: i * 2 and i * 2 + 1
     inputs = [
-      {
-        previous_output: {tx_hash: out_points[i * 2][0], index: out_points[i * 2][1]},
+      CKB::Types::Input.new(
+        previous_output: CKB::Types::OutPoint.new(
+          cell: CKB::Types::CellOutPoint.new(tx_hash: out_points[i * 2][0], index: out_points[i * 2][1])
+        ),
         args: [],
         since: "0"
-      },
-      {
-        previous_output: {tx_hash: out_points[i * 2 + 1][0], index: out_points[i * 2 + 1][1]},
+      ),
+      CKB::Types::Input.new(
+        previous_output: CKB::Types::OutPoint.new(
+          cell: CKB::Types::CellOutPoint.new(tx_hash: out_points[i * 2 + 1][0], index: out_points[i * 2 + 1][1])
+        ),
         args: [],
         since: "0"
-      }
+      ),
     ]
     per_cell_cap = SECP_TX_CAPACITY / 2
     outputs = [
-      {
-        capacity: per_cell_cap.to_s,
-        data: CKB::Utils.bin_to_hex(""),
-        lock: lock_hash
-      },
-      {
-        capacity: per_cell_cap.to_s,
-        data: CKB::Utils.bin_to_hex(""),
-        lock: lock_hash
-      }
+      CKB::Types::Output.new(
+        capacity: per_cell_cap,
+        lock: lock_script
+      ),
+      CKB::Types::Output.new(
+        capacity: per_cell_cap,
+        lock: lock_script
+      ),
     ]
 
-    tx = CKB::Transaction.new(
-      version: 0,
+    tx = CKB::Types::Transaction.new(
       deps: [apis[0].system_script_out_point],
       inputs: inputs,
       outputs: outputs,
@@ -311,7 +311,7 @@ def send_txs(apis, out_points, txs_count, unlock_key:, lock_hash:)
             tip = new_tip
           end
         end
-        block_time = BlockTime.new(number: tip[:number].to_i, timestamp: tip[:timestamp].to_i)
+        block_time = BlockTime.new(number: tip.number.to_i, timestamp: tip.timestamp.to_i)
         print ".".colorize(:green)
         begin
           tx_hash = api.send_transaction(tx.to_h)
@@ -371,10 +371,11 @@ end
 def run(apis, from, txs_count)
   api = apis[0]
   tip = api.get_tip_header
-  watch_pool = WatchPool.new(apis, tip[:number].to_i)
+  watch_pool = WatchPool.new(apis, tip.number.to_i)
   key = CKB::Key.new(CKB::Key.random_private_key)
   puts "use random generated key #{key.pubkey}"
-  lock_addr = key.address.parse(key.address.generate)
+  lock_addr = key.address.blake160
+  puts "generate addr len #{lock_addr.size}"
   puts "prepare #{txs_count} benchmark cells from height #{from}".colorize(:yellow)
   tx_tasks, out_points = prepare_cells(api, from, txs_count, lock_addr: lock_addr)
   tx_tasks.each do |tx_task|
@@ -384,10 +385,9 @@ def run(apis, from, txs_count)
   puts tx_tasks
   watch_pool.wait_all
   puts "start sending #{txs_count} txs...".colorize(:yellow)
-  lock_hash = CKB::Utils.generate_lock(
-    lock_addr, 
-    api.system_script_cell_hash)
-  tx_tasks = send_txs(apis, out_points, txs_count, unlock_key: key, lock_hash: lock_hash)
+  lock_script = CKB::Types::Script.generate_lock(
+    lock_addr, api.system_script_cell_hash)
+  tx_tasks = send_txs(apis, out_points, txs_count, unlock_key: key, lock_script: lock_script)
   tx_tasks.each do |task|
     watch_pool.add task.tx_hash, task
   end
@@ -409,7 +409,7 @@ if __FILE__ == $0
                  begin
                    api_with_tip = Timeout.timeout(10) do
                      api = CKB::API.new(host: "http://#{ip}:#{port}")
-                     [api, api.get_tip_header[:number].to_i]
+                     [api, api.get_tip_header.number.to_i]
                    end 
                    print "*"
                    api_with_tip
@@ -421,10 +421,10 @@ if __FILE__ == $0
              end
              api_tests.map(&:value).reject(&:nil?).shuffle
            else
-             api_url = ENV['API_URL'] || CKB::API::DEFAULT_URL
+             api_url = ENV['API_URL'] || 'http://localhost:8114'
              api_url.split("|").map do |url| 
                api = CKB::API.new(host: url)
-               [api, api.get_tip_header[:number].to_i]
+               [api, api.get_tip_header.number.to_i]
              end
            end
     tips = apis_tips.map{|api, tip| tip}.sort

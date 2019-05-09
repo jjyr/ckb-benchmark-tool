@@ -1,16 +1,16 @@
 GIT
-  remote: git://github.com/nervosnetwork/ckb-sdk-ruby.git
-  revision: e487b9f9db1993893c36a1725823282d44b5614a
-  branch: develop
+  remote: git://github.com/jjyr/ckb-sdk-ruby.git
+  revision: 677cb8020afa01a142f107f1c553c4b21d710a66
+  branch: fix1
   specs:
-    ckb-sdk-ruby (0.9.0)
+    ckb-sdk-ruby (0.11.0)
       bitcoin-secp256k1 (~> 0.5.0)
       rbnacl (~> 6.0, >= 6.0.1)
 
 GEM
   remote: https://rubygems.org/
   specs:
-    bitcoin-secp256k1 (0.5.0)
+    bitcoin-secp256k1 (0.5.1)
       ffi (>= 1.9.25)
     coderay (1.1.2)
     colorize (0.8.1)
