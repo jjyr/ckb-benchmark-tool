@@ -300,7 +300,8 @@ def send_txs(apis, out_points, txs_count, unlock_key:, lock_script:)
       outputs: outputs,
       witnesses: [],
     )
-    tx.sign(unlock_key)
+    tx_hash = apis[0].compute_transaction_hash(tx)
+    tx.sign(unlock_key, tx_hash)
   end
 
   queue = Queue.new()
