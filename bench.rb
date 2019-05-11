@@ -7,7 +7,8 @@ require 'ckb'
 require 'colorize'
 require 'terminal-table'
 
-ALWAYS_SUCCESS = "0x0000000000000000000000000000000000000000000000000000000000000001".freeze
+MINER_LOCK_ADDR = "0xd074c75f81e7f462066498e71c93a476a07d8033".freeze
+MINER_PRIV_KEY = "0x390057c2e04ed67979a71d37b61bdadc6514206425990625384843f48644054b".freeze
 BIT = 100_000_000
 PURE_TX_CAPACITY = 128 * BIT
 SECP_TX_CAPACITY = 336 * BIT
@@ -150,23 +151,21 @@ def random_lock_id
   "0x" + SecureRandom.hex
 end
 
-def get_always_success_lock_script(args: [])
-  CKB::Types::Script.new(
-    code_hash: ALWAYS_SUCCESS,
-    args: args
-  )
+def get_always_success_lock_script(args: [], lock_hash: )
+  CKB::Types::Script.generate_lock(
+    MINER_LOCK_ADDR, lock_hash)
 end
 
 def get_always_success_cellbase(api, from:, tx_count:)
-  lock_script = get_always_success_lock_script
+  lock_script = get_always_success_lock_script(lock_hash: api.system_script_cell_hash)
   cells = []
-  while cells.map{|c| c.capacity / SECP_TX_CAPACITY}.sum < tx_count
+  while cells.map{|c| c.capacity.to_i / SECP_TX_CAPACITY}.sum < tx_count
     new_cells = api.get_cells_by_lock_hash(lock_script.to_hash, from.to_s, (from + 20).to_s)
     if new_cells.empty?
       puts "can't found enough cellbase #{tx_count} from #{api.inspect} #{cells}"
       exit 1
     end
-    new_cells.reject!{|c| c.capacity < SECP_TX_CAPACITY }
+    new_cells.reject!{|c| c.capacity.to_i < SECP_TX_CAPACITY }
     cells.concat(new_cells)
     cells.uniq! {|c| c.out_point.to_h}
     from += 20
@@ -174,7 +173,7 @@ def get_always_success_cellbase(api, from:, tx_count:)
   cells
 end
 
-def build_secp_prepare_tx cells, addr, lock_script_hash:
+def build_secp_prepare_tx cells, addr, lock_script_hash:,system_script_out_point:
   inputs = cells.map do |cell|
     CKB::Types::Input.new(
       previous_output: cell.out_point,
@@ -183,7 +182,7 @@ def build_secp_prepare_tx cells, addr, lock_script_hash:
     )
   end
 
-  total_cap = cells.map{|c| c.capacity}.sum
+  total_cap = cells.map{|c| c.capacity.to_i}.sum
   # to build 2-in-2-out tx
   per_cell_cap = SECP_TX_CAPACITY / 2
   outputs = (total_cap / per_cell_cap).times.map do |i|
@@ -199,37 +198,7 @@ def build_secp_prepare_tx cells, addr, lock_script_hash:
 
   CKB::Types::Transaction.new(
     version: 0,
-    deps: [],
-    inputs: inputs,
-    outputs: outputs,
-    witnesses: [],
-  )
-end
-
-def build_prepare_tx cells
-  inputs = cells.map do |cell|
-    {
-      previous_output: cell[:out_point],
-      args: [],
-      since: "0",
-    }
-  end
-
-  total_cap = cells.map{|c| c[:capacity].to_i}.sum
-  outputs = (total_cap / PURE_TX_CAPACITY).times.map do |i|
-    {
-      capacity: PURE_TX_CAPACITY.to_s,
-      data: CKB::Utils.bin_to_hex("prepare_tx#{i}"),
-      lock: {
-        code_hash: ALWAYS_SUCCESS,
-        args: []
-      }
-    }
-  end
-
-  CKB::Transaction.new(
-    version: 0,
-    deps: [],
+    deps: [system_script_out_point],
     inputs: inputs,
     outputs: outputs,
     witnesses: [],
@@ -252,10 +221,14 @@ def prepare_cells(api, from, count, lock_addr: )
     raise "error detect! dup cells #{cells.size - cells.uniq{|c| c.out_point.to_h}.size}"
   end
 
+  miner_key = CKB::Key.new(MINER_PRIV_KEY)
   tx_tasks = []
   out_points = []
+  system_script_out_point = api.system_script_out_point
   cells.each_slice(1).map do |cells|
-    tx = build_secp_prepare_tx cells, lock_addr, lock_script_hash: api.system_script_cell_hash
+    tx = build_secp_prepare_tx cells, lock_addr, lock_script_hash: api.system_script_cell_hash, system_script_out_point: system_script_out_point
+    tx_hash = api.compute_transaction_hash(tx)
+    tx.sign(miner_key, tx_hash)
     tx_hash = api.send_transaction(tx.to_h)
     out_points += tx.outputs.count.times.map{|i| [tx_hash, i]}
     tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: send_time)
