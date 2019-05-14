@@ -7,7 +7,6 @@ require 'ckb'
 require 'colorize'
 require 'terminal-table'
 
-MINER_LOCK_ADDR = "0xd074c75f81e7f462066498e71c93a476a07d8033".freeze
 MINER_PRIV_KEY = "0x390057c2e04ed67979a71d37b61bdadc6514206425990625384843f48644054b".freeze
 BIT = 100_000_000
 PURE_TX_CAPACITY = 128 * BIT
@@ -151,13 +150,13 @@ def random_lock_id
   "0x" + SecureRandom.hex
 end
 
-def get_always_success_lock_script(args: [], lock_hash: )
+def get_always_success_lock_script(miner_lock_addr: , lock_hash: )
   CKB::Types::Script.generate_lock(
-    MINER_LOCK_ADDR, lock_hash)
+    miner_lock_addr, lock_hash)
 end
 
-def get_always_success_cellbase(api, from:, tx_count:)
-  lock_script = get_always_success_lock_script(lock_hash: api.system_script_cell_hash)
+def get_always_success_cellbase(api, from:, tx_count:, miner_lock_addr:)
+  lock_script = get_always_success_lock_script(miner_lock_addr: miner_lock_addr, lock_hash: api.system_script_cell_hash)
   cells = []
   while cells.map{|c| c.capacity.to_i / SECP_TX_CAPACITY}.sum < tx_count
     new_cells = api.get_cells_by_lock_hash(lock_script.to_hash, from.to_s, (from + 20).to_s)
@@ -206,7 +205,9 @@ def build_secp_prepare_tx cells, addr, lock_script_hash:,system_script_out_point
 end
 
 def prepare_cells(api, from, count, lock_addr: )
-  cells = get_always_success_cellbase(api, from: from, tx_count: count)
+  miner_key = CKB::Key.new(MINER_PRIV_KEY)
+  miner_lock_addr = miner_key.address.blake160
+  cells = get_always_success_cellbase(api, miner_lock_addr: miner_lock_addr, from: from, tx_count: count)
   if cells.empty?
     puts "can't find cellbase in #{from}"
     exit 1
@@ -221,14 +222,13 @@ def prepare_cells(api, from, count, lock_addr: )
     raise "error detect! dup cells #{cells.size - cells.uniq{|c| c.out_point.to_h}.size}"
   end
 
-  miner_key = CKB::Key.new(MINER_PRIV_KEY)
   tx_tasks = []
   out_points = []
   system_script_out_point = api.system_script_out_point
   cells.each_slice(1).map do |cells|
     tx = build_secp_prepare_tx cells, lock_addr, lock_script_hash: api.system_script_cell_hash, system_script_out_point: system_script_out_point
     tx_hash = api.compute_transaction_hash(tx)
-    tx.sign(miner_key, tx_hash)
+    tx = tx.sign(miner_key, tx_hash)
     tx_hash = api.send_transaction(tx.to_h)
     out_points += tx.outputs.count.times.map{|i| [tx_hash, i]}
     tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: send_time)
