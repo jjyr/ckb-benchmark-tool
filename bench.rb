@@ -267,14 +267,12 @@ def send_txs(apis, out_points, txs_count, unlock_key:, lock_script:)
       ),
     ]
 
-    tx = CKB::Types::Transaction.new(
+    CKB::Types::Transaction.new(
       deps: [apis[0].system_script_out_point],
       inputs: inputs,
       outputs: outputs,
       witnesses: [],
     )
-    tx_hash = apis[0].compute_transaction_hash(tx)
-    tx.sign(unlock_key, tx_hash)
   end
 
   queue = Queue.new()
@@ -287,6 +285,8 @@ def send_txs(apis, out_points, txs_count, unlock_key:, lock_script:)
       tx_tasks = []
       count = 0
       while tx = (queue.pop(true) rescue nil)
+        tx_hash = api.compute_transaction_hash(tx)
+        tx = tx.sign(unlock_key, tx_hash)
         count += 1
         if count % 100 == 0
           new_tip = api.get_tip_header 
