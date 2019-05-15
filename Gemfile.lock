@@ -1,7 +1,7 @@
 GIT
   remote: git://github.com/nervosnetwork/ckb-sdk-ruby.git
-  revision: 6ac44ef5f07c0cf78262b8b00dbddf319c57485b
-  ref: 6ac44ef5f07c0cf78262b8b00dbddf319c57485b
+  revision: e7346e8c0a95aa132823071ce29ab6485c55ef0a
+  branch: develop
   specs:
     ckb-sdk-ruby (0.11.0)
       bitcoin-secp256k1 (~> 0.5.0)

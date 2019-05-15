@@ -368,8 +368,10 @@ def run(apis, from, txs_count)
   puts tx_tasks
   watch_pool.wait_all
   puts "start sending #{txs_count} txs...".colorize(:yellow)
+  miner_key = CKB::Key.new(MINER_PRIV_KEY)
+  miner_lock_addr = miner_key.address.blake160
   lock_script = CKB::Types::Script.generate_lock(
-    lock_addr, api.system_script_cell_hash)
+    miner_lock_addr, api.system_script_cell_hash)
   tx_tasks = send_txs(apis, out_points, txs_count, unlock_key: key, lock_script: lock_script)
   tx_tasks.each do |task|
     watch_pool.add task.tx_hash, task
