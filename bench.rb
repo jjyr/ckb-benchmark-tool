@@ -285,18 +285,18 @@ def send_txs(apis, out_points, txs_count, unlock_key:, lock_script:)
       tx_tasks = []
       count = 0
       while tx = (queue.pop(true) rescue nil)
-        tx_hash = api.compute_transaction_hash(tx)
-        tx = tx.sign(unlock_key, tx_hash)
-        count += 1
-        if count % 100 == 0
-          new_tip = api.get_tip_header 
-          if new_tip.timestamp.to_i > tip.timestamp.to_i
-            tip = new_tip
-          end
-        end
-        block_time = BlockTime.new(number: tip.number.to_i, timestamp: tip.timestamp.to_i)
-        print ".".colorize(:green)
         begin
+          tx_hash = api.compute_transaction_hash(tx)
+          tx = tx.sign(unlock_key, tx_hash)
+          count += 1
+          if count % 100 == 0
+            new_tip = api.get_tip_header 
+            if new_tip.timestamp.to_i > tip.timestamp.to_i
+              tip = new_tip
+            end
+          end
+          block_time = BlockTime.new(number: tip.number.to_i, timestamp: tip.timestamp.to_i)
+          print ".".colorize(:green)
           tx_hash = api.send_transaction(tx.to_h)
           tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: block_time)
         rescue StandardError => e
