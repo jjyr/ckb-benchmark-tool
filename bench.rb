@@ -163,7 +163,7 @@ def get_always_success_cellbase(api, from:, tx_count:, miner_lock_addr:)
     new_cells = api.get_cells_by_lock_hash(lock_script.to_hash, from.to_s, (from + 100).to_s)
     if new_cells.empty?
       puts "can't found enough cellbase #{tx_count} from #{api.inspect} #{cells}"
-      exit 1 if from > tip_number
+      # exit 1 if from > tip_number
     end
     new_cells.reject!{|c| c.capacity.to_i < SECP_TX_CAPACITY }
     cells.concat(new_cells)
@@ -195,8 +195,6 @@ def build_secp_prepare_tx cells, addr, lock_script_hash:,system_script_out_point
       )
     )
   end
-
-  p outputs
 
   CKB::Types::Transaction.new(
     version: 0,
