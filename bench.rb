@@ -240,6 +240,7 @@ def prepare_cells(api, from, count, miner_key: , test_key:)
     tx_hash = api.compute_transaction_hash(tx)
     tx = tx.sign(miner_key, tx_hash)
     tx_hash = api.send_transaction(tx.to_h)
+    print ".".colorize(:yellow)
     out_points += tx.outputs.count.times.map{|i| [tx_hash, i]}
     tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: send_time)
   end
@@ -374,10 +375,10 @@ def run(config, apis, from, txs_count)
   api = apis[0]
   tip = api.get_tip_header
   watch_pool = WatchPool.new(apis, tip.number.to_i)
-  # test key
-  test_key = CKB::Key.new(CKB::Key.random_private_key)
   # prepare miner key
   miner_key = CKB::Key.new(config["miner"]["privkey"])
+  # test key
+  test_key = miner_key # CKB::Key.new(CKB::Key.random_private_key)
   puts "use random generated key #{test_key.pubkey}"
   puts "prepare #{txs_count} benchmark cells from height #{from}".colorize(:yellow)
   # prepare test cells
@@ -390,7 +391,7 @@ def run(config, apis, from, txs_count)
     watch_pool.add(tx_task.tx_hash, tx_task)
   end
   puts "wait prepare tx get confirmed ...".colorize(:yellow)
-  puts tx_tasks
+  # puts tx_tasks
   watch_pool.wait_all
   puts "start sending #{txs_count} txs...".colorize(:yellow)
 
