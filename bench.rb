@@ -423,6 +423,7 @@ if __FILE__ == $0
           api_with_tip
         rescue StandardError => _e
           print "x"
+          p _e
           nil
         end
       end

@@ -1,7 +1,7 @@
 GIT
-  remote: git://github.com/nervosnetwork/ckb-sdk-ruby.git
-  revision: 1ead7a3b24eb8c4e23c6e7402874a266c0a569cd
-  branch: develop
+  remote: git://github.com/jjyr/ckb-sdk-ruby.git
+  revision: af8b3f28d6611307547b533b37b4f45d3ae1bf43
+  branch: support-basic-auth
   specs:
     ckb-sdk-ruby (0.13.0)
       bitcoin-secp256k1 (~> 0.5.0)
