@@ -11,7 +11,7 @@ require 'fileutils'
 
 BIT = 100_000_000
 PURE_TX_CAPACITY = 128 * BIT
-SECP_TX_CAPACITY = 336 * BIT
+SECP_TX_CAPACITY = 168 * BIT
 CELLBASE_REWARD = BIT * 50000
 
 class BlockTime
@@ -156,13 +156,12 @@ def get_always_success_lock_script(miner_lock_addr: , lock_hash: )
 end
 
 def get_always_success_cellbase(api, from:, tx_count:, miner_lock_addr:)
-  tip_number = api.get_tip_header.number.to_i
   lock_script = get_always_success_lock_script(miner_lock_addr: miner_lock_addr, lock_hash: api.system_script_code_hash)
   cells = []
   while cells.map{|c| c.capacity.to_i / SECP_TX_CAPACITY}.sum < tx_count
     new_cells = api.get_cells_by_lock_hash(lock_script.to_hash, from.to_s, (from + 100).to_s)
     if new_cells.empty?
-      puts "can't found enough cellbase #{tx_count} from #{api.inspect} #{cells}"
+      puts "can't found enough cellbase #{tx_count} from #{api.inspect} height #{from}"
       # exit 1 if from > tip_number
     end
     new_cells.reject!{|c| c.capacity.to_i < SECP_TX_CAPACITY }
@@ -184,7 +183,7 @@ def build_secp_prepare_tx cells, addr, lock_script_hash:,system_script_out_point
 
   total_cap = cells.map{|c| c.capacity.to_i}.sum
   # to build 2-in-2-out tx
-  per_cell_cap = SECP_TX_CAPACITY / 2
+  per_cell_cap = SECP_TX_CAPACITY
   outputs = (total_cap / per_cell_cap).times.map do |i|
     CKB::Types::Output.new(
       capacity: per_cell_cap.to_s,
@@ -225,9 +224,17 @@ def prepare_cells(api, from, count, miner_key: , test_key:)
 
   tx_tasks = []
   out_points = []
-  cells.each_slice(1).map do |cells|
+  until cells.empty?
+    cells_to_spent = []
+    until cells_to_spent.map{|c| c.capacity.to_i}.sum >= 2 * SECP_TX_CAPACITY
+      if cells.empty?
+        puts "can't collect enough cells for a tx, give up"
+        break
+      end
+      cells_to_spent << cells.pop
+    end
     tx = build_secp_prepare_tx(
-      cells, test_lock_addr,
+      cells_to_spent, test_lock_addr,
       lock_script_hash: api.system_script_code_hash,
       system_script_out_point: api.system_script_out_point)
     tx_hash = api.compute_transaction_hash(tx)
