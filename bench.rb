@@ -155,11 +155,11 @@ def get_always_success_lock_script(miner_lock_addr: , lock_hash: )
     miner_lock_addr, lock_hash)
 end
 
-def get_always_success_cellbase(api, from:, tx_count:, miner_lock_addr:)
+def get_always_success_cellbase(api, from:, tx_count:, miner_lock_addr:, step: 100)
   lock_script = get_always_success_lock_script(miner_lock_addr: miner_lock_addr, lock_hash: api.system_script_code_hash)
   cells = []
-  while cells.map{|c| c.capacity.to_i / SECP_TX_CAPACITY}.sum < tx_count
-    new_cells = api.get_cells_by_lock_hash(lock_script.to_hash, from.to_s, (from + 100).to_s)
+  while cells.map{|c| c.capacity.to_i / SECP_TX_CAPACITY}.sum < 2 * tx_count
+    new_cells = api.get_cells_by_lock_hash(lock_script.to_hash, from.to_s, (from + step).to_s)
     if new_cells.empty?
       puts "can't found enough cellbase #{tx_count} from #{api.inspect} height #{from}"
       # exit 1 if from > tip_number
@@ -167,8 +167,15 @@ def get_always_success_cellbase(api, from:, tx_count:, miner_lock_addr:)
     new_cells.reject!{|c| c.capacity.to_i < SECP_TX_CAPACITY }
     cells.concat(new_cells)
     cells.uniq! {|c| c.out_point.to_h}
-    from += 100
+    from += step
   end
+  puts "cell count #{cells.size}"
+  puts "per cell secp #{SECP_TX_CAPACITY}"
+  puts "tx count #{tx_count}"
+  puts "cell first cap #{cells.first.capacity}"
+  puts "sum count #{cells.map{|c| c.capacity.to_i / SECP_TX_CAPACITY}.sum}"
+  puts "first count #{cells[0..1].map{|c| c.capacity.to_i / SECP_TX_CAPACITY}.sum}"
+  puts "total capacities #{cells.map{|c| c.capacity.to_i}.sum}"
   cells
 end
 
@@ -222,16 +229,23 @@ def prepare_cells(api, from, count, miner_key: , test_key:)
     raise "error detect! dup cells #{cells.size - cells.uniq{|c| c.out_point.to_h}.size}"
   end
 
+  puts "total capacities #{cells.map{|c| c.capacity.to_i}.sum}"
+
   tx_tasks = []
   out_points = []
-  until cells.empty?
+  until out_points.size >= 2 * count
     cells_to_spent = []
-    until cells_to_spent.map{|c| c.capacity.to_i}.sum >= 2 * SECP_TX_CAPACITY
+    until cells_to_spent.map{|c| c.capacity.to_i}.sum >= SECP_TX_CAPACITY
       if cells.empty?
-        puts "can't collect enough cells for a tx, give up"
-        break
+        raise "can't collect enough cells for a tx, give up"
       end
-      cells_to_spent << cells.pop
+      cell = cells.shift
+      # skip if cell alreadt formatted
+      if cell.capacity.to_i == SECP_TX_CAPACITY
+        out_points << [cell.out_point.cell.tx_hash, cell.out_point.cell.index]
+        next
+      end
+      cells_to_spent << cell
     end
     tx = build_secp_prepare_tx(
       cells_to_spent, test_lock_addr,
@@ -239,7 +253,12 @@ def prepare_cells(api, from, count, miner_key: , test_key:)
       system_script_out_point: api.system_script_out_point)
     tx_hash = api.compute_transaction_hash(tx)
     tx = tx.sign(miner_key, tx_hash)
-    tx_hash = api.send_transaction(tx.to_h)
+    begin
+      tx_hash = api.send_transaction(tx.to_h)
+    rescue
+      p tx
+      raise
+    end
     print ".".colorize(:yellow)
     out_points += tx.outputs.count.times.map{|i| [tx_hash, i]}
     tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: send_time)
@@ -270,7 +289,7 @@ def send_txs(apis, out_points, txs_count, unlock_key:, miner_key:)
         since: "0"
       ),
     ]
-    per_cell_cap = SECP_TX_CAPACITY / 2
+    per_cell_cap = SECP_TX_CAPACITY
     outputs = [
       CKB::Types::Output.new(
         capacity: per_cell_cap,
