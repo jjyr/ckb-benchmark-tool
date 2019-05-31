@@ -1,0 +1,11 @@
+[miner]
+privkey = "0xc7e01665866d5716a09e9359c73695bedc4513c09cd30225ae4891bd4d0f742a"
+
+[testnode]
+servers=[
+"http://localhost:8114"
+]
+
+[result]
+result_dir="test_result"
+

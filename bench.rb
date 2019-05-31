@@ -6,13 +6,13 @@ require 'securerandom'
 require 'ckb'
 require 'colorize'
 require 'terminal-table'
+require 'toml-rb'
+require 'fileutils'
 
-MINER_PRIV_KEY = "0x390057c2e04ed67979a71d37b61bdadc6514206425990625384843f48644054b".freeze
 BIT = 100_000_000
 PURE_TX_CAPACITY = 128 * BIT
 SECP_TX_CAPACITY = 336 * BIT
 CELLBASE_REWARD = BIT * 50000
-DEFAULT_STAT_FILE = "tx_records"
 
 class BlockTime
   attr_accessor :timestamp, :number
@@ -156,18 +156,19 @@ def get_always_success_lock_script(miner_lock_addr: , lock_hash: )
 end
 
 def get_always_success_cellbase(api, from:, tx_count:, miner_lock_addr:)
-  lock_script = get_always_success_lock_script(miner_lock_addr: miner_lock_addr, lock_hash: api.system_script_cell_hash)
+  tip_number = api.get_tip_header.number.to_i
+  lock_script = get_always_success_lock_script(miner_lock_addr: miner_lock_addr, lock_hash: api.system_script_code_hash)
   cells = []
   while cells.map{|c| c.capacity.to_i / SECP_TX_CAPACITY}.sum < tx_count
-    new_cells = api.get_cells_by_lock_hash(lock_script.to_hash, from.to_s, (from + 20).to_s)
+    new_cells = api.get_cells_by_lock_hash(lock_script.to_hash, from.to_s, (from + 100).to_s)
     if new_cells.empty?
       puts "can't found enough cellbase #{tx_count} from #{api.inspect} #{cells}"
-      exit 1
+      exit 1 if from > tip_number
     end
     new_cells.reject!{|c| c.capacity.to_i < SECP_TX_CAPACITY }
     cells.concat(new_cells)
     cells.uniq! {|c| c.out_point.to_h}
-    from += 20
+    from += 100
   end
   cells
 end
@@ -195,6 +196,8 @@ def build_secp_prepare_tx cells, addr, lock_script_hash:,system_script_out_point
     )
   end
 
+  p outputs
+
   CKB::Types::Transaction.new(
     version: 0,
     deps: [system_script_out_point],
@@ -204,9 +207,9 @@ def build_secp_prepare_tx cells, addr, lock_script_hash:,system_script_out_point
   )
 end
 
-def prepare_cells(api, from, count, lock_addr: )
-  miner_key = CKB::Key.new(MINER_PRIV_KEY)
+def prepare_cells(api, from, count, miner_key: , test_key:)
   miner_lock_addr = miner_key.address.blake160
+  test_lock_addr = test_key.address.blake160
   cells = get_always_success_cellbase(api, miner_lock_addr: miner_lock_addr, from: from, tx_count: count)
   if cells.empty?
     puts "can't find cellbase in #{from}"
@@ -224,9 +227,11 @@ def prepare_cells(api, from, count, lock_addr: )
 
   tx_tasks = []
   out_points = []
-  system_script_out_point = api.system_script_out_point
   cells.each_slice(1).map do |cells|
-    tx = build_secp_prepare_tx cells, lock_addr, lock_script_hash: api.system_script_cell_hash, system_script_out_point: system_script_out_point
+    tx = build_secp_prepare_tx(
+      cells, test_lock_addr,
+      lock_script_hash: api.system_script_code_hash,
+      system_script_out_point: api.system_script_out_point)
     tx_hash = api.compute_transaction_hash(tx)
     tx = tx.sign(miner_key, tx_hash)
     tx_hash = api.send_transaction(tx.to_h)
@@ -236,7 +241,11 @@ def prepare_cells(api, from, count, lock_addr: )
   [tx_tasks, out_points]
 end
 
-def send_txs(apis, out_points, txs_count, unlock_key:, lock_script:)
+def send_txs(apis, out_points, txs_count, unlock_key:, miner_key:)
+  # put money back to miner lock
+  miner_lock_addr = miner_key.address.blake160
+  lock_script = CKB::Types::Script.generate_lock(
+    miner_lock_addr, apis[0].system_script_code_hash)
   txs = txs_count.times.map do |i|
     # two inputs: i * 2 and i * 2 + 1
     inputs = [
@@ -276,25 +285,30 @@ def send_txs(apis, out_points, txs_count, unlock_key:, lock_script:)
   end
 
   queue = Queue.new()
+  signed_queue = Queue.new()
   txs.each{|tx| queue.push tx}
   # sending
   puts "start #{apis.size} threads.."
   tip = apis[0].get_tip_header
   threads = apis.each_with_index.map do |api, worker_id|
     Thread.new(worker_id, api, tip) do |worker_id, api, tip|
-      tx_tasks = []
-      count = 0
+      # sign all txs
       while tx = (queue.pop(true) rescue nil)
-        begin
           tx_hash = api.compute_transaction_hash(tx)
           tx = tx.sign(unlock_key, tx_hash)
-          count += 1
+          signed_queue << tx
+      end
+      tx_tasks = []
+      count = 0
+      while tx = (signed_queue.pop(true) rescue nil)
+        begin
           if count % 100 == 0
             new_tip = api.get_tip_header 
             if new_tip.timestamp.to_i > tip.timestamp.to_i
               tip = new_tip
             end
           end
+          count += 1
           block_time = BlockTime.new(number: tip.number.to_i, timestamp: tip.timestamp.to_i)
           print ".".colorize(:green)
           tx_hash = api.send_transaction(tx.to_h)
@@ -351,16 +365,22 @@ def statistics(tx_tasks)
   puts table
 end
 
-def run(apis, from, txs_count)
+def run(config, apis, from, txs_count)
   api = apis[0]
   tip = api.get_tip_header
   watch_pool = WatchPool.new(apis, tip.number.to_i)
-  key = CKB::Key.new(CKB::Key.random_private_key)
-  puts "use random generated key #{key.pubkey}"
-  lock_addr = key.address.blake160
-  puts "generate addr len #{lock_addr.size}"
+  # test key
+  test_key = CKB::Key.new(CKB::Key.random_private_key)
+  # prepare miner key
+  miner_key = CKB::Key.new(config["miner"]["privkey"])
+  puts "use random generated key #{test_key.pubkey}"
   puts "prepare #{txs_count} benchmark cells from height #{from}".colorize(:yellow)
-  tx_tasks, out_points = prepare_cells(api, from, txs_count, lock_addr: lock_addr)
+  # prepare test cells
+  tx_tasks, out_points = prepare_cells(
+    api, from, txs_count, 
+    miner_key: miner_key,
+    test_key: test_key,
+  )
   tx_tasks.each do |tx_task|
     watch_pool.add(tx_task.tx_hash, tx_task)
   end
@@ -368,58 +388,57 @@ def run(apis, from, txs_count)
   puts tx_tasks
   watch_pool.wait_all
   puts "start sending #{txs_count} txs...".colorize(:yellow)
-  miner_key = CKB::Key.new(MINER_PRIV_KEY)
-  miner_lock_addr = miner_key.address.blake160
-  lock_script = CKB::Types::Script.generate_lock(
-    miner_lock_addr, api.system_script_cell_hash)
-  tx_tasks = send_txs(apis, out_points, txs_count, unlock_key: key, lock_script: lock_script)
+
+  # send tests txs
+  tx_tasks = send_txs(apis, out_points, txs_count, unlock_key: test_key, miner_key: miner_key)
   tx_tasks.each do |task|
     watch_pool.add task.tx_hash, task
   end
   puts "wait all txs get confirmed ...".colorize(:yellow)
   watch_pool.wait_all
-  puts "complete, saving to ./#{DEFAULT_STAT_FILE} ...".colorize(:yellow)
-  Marshal.dump(tx_tasks, open(DEFAULT_STAT_FILE, "w+"))
+  result_dir = config["result"]["result_dir"]
+  test_result_file = "#{result_dir}/#{Time.now.to_s.split[0..1].join("-")}.dat"
+  puts "complete, saving to ./#{test_result_file} ...".colorize(:yellow)
+  unless File.directory?(result_dir)
+    FileUtils.mkdir_p(result_dir)
+  end
+  Marshal.dump(tx_tasks, open(test_result_file, "w+"))
 end
 
 if __FILE__ == $0
   command = ARGV[0]
   if command == "run"
-    from, txs_count, server_list = ARGV[1].to_i, ARGV[2].to_i, ARGV[3]
-    apis_tips = if server_list
-             server_list = open(server_list).read
-             server_ips = server_list.gsub(/\d+\.\d+\.\d+\.\d+/)
-             api_tests = server_ips.to_a.product([8122, 8121]).map do |ip, port| 
-               Thread.new do
-                 begin
-                   api_with_tip = Timeout.timeout(10) do
-                     api = CKB::API.new(host: "http://#{ip}:#{port}")
-                     [api, api.get_tip_header.number.to_i]
-                   end 
-                   print "*"
-                   api_with_tip
-                 rescue StandardError => _e
-                   print "x"
-                   nil
-                 end
-               end
-             end
-             api_tests.map(&:value).reject(&:nil?).shuffle
-           else
-             api_url = ENV['API_URL'] || 'http://localhost:8114'
-             api_url.split("|").map do |url| 
-               api = CKB::API.new(host: url)
-               [api, api.get_tip_header.number.to_i]
-             end
-           end
+    config, from, txs_count = ARGV[1], ARGV[2].to_i, ARGV[3].to_i
+    # read config
+    path = File.join(File.dirname(__FILE__), config)
+    config = TomlRB.load_file(path)
+    p config
+    # prepare test servers connections
+    apis_tests = config["testnode"]["servers"].map do |url|
+      Thread.new do
+        begin
+          api_with_tip = Timeout.timeout(10) do
+            api = CKB::API.new(host: url)
+            [api, api.get_tip_header.number.to_i]
+          end 
+          print "*"
+          api_with_tip
+        rescue StandardError => _e
+          print "x"
+          nil
+        end
+      end
+    end
+    apis_tips = apis_tests.map(&:value).reject(&:nil?).shuffle
     tips = apis_tips.map{|api, tip| tip}.sort
     median_tip = tips[tips.size / 2]
+    # we rejust servers that tip number below than median tip
     apis = apis_tips.select{|api, tip| tip >= median_tip}.map{|api, _| api}
     puts "\nuse #{apis.size} servers to run benchmark"
     p apis
-    run(apis, from, txs_count)
+    run(config, apis, from, txs_count)
   elsif command == "stat"
-    stat_file = ARGV[1] || DEFAULT_STAT_FILE
+    stat_file = ARGV[1]
     puts "statistics #{stat_file}..."
     tx_tasks = Marshal.load(open(stat_file, "r"))
     statistics(tx_tasks)

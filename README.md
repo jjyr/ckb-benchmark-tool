@@ -16,9 +16,8 @@ cd ckb-benchmark-tool && bundle install
 2, Send transactions
 
 ```
-# use ENV variable to specific API endpoint, default is http://localhost:8114
-# API_URL=http://192.168.2.134:8114
-./bench.rb run <block_number> <txs_count>
+# update config.toml
+./bench.rb run config.toml <block_number> <txs_count>
 ```
 
 1. find cellbases from `block_number`, then prepare a bench of cells
@@ -27,7 +26,7 @@ cd ckb-benchmark-tool && bundle install
 3, Run statistics
 
 ```
-./bench.rb stat
+./bench.rb stat <file>
 ```
 
 Example:
