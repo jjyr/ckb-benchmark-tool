@@ -100,7 +100,12 @@ class WatchPool
     end
   end
 
-  def wait_all
+  def consider_complete(confirm_rate)
+    total_count = @committed.count + @proposed.count + @initial.count
+    @committed.count.to_f / total_count >= confirm_rate
+  end
+
+  def wait_all(confirm_rate=1)
     total_proposed_count = 0
     total_committed_count = 0
     total_waits = @initial.count
@@ -115,7 +120,7 @@ class WatchPool
       else
         sleep 3
       end
-      return if @initial.empty? && @proposed.empty?
+      return if consider_complete(confirm_rate)
     end
   end
 
@@ -427,14 +432,14 @@ def run(config, apis, from, txs_count)
     watch_pool.add task.tx_hash, task
   end
   puts "wait all txs get confirmed ...".colorize(:yellow)
-  watch_pool.wait_all
+  watch_pool.wait_all(0.99)
   result_dir = config["result"]["result_dir"]
   test_result_file = "#{result_dir}/#{Time.now.to_s.split[0..1].join("-")}.dat"
   puts "complete, saving to ./#{test_result_file} ...".colorize(:yellow)
   unless File.directory?(result_dir)
     FileUtils.mkdir_p(result_dir)
   end
-  Marshal.dump(tx_tasks, open(test_result_file, "w+"))
+  Marshal.dump(tx_tasks.select{|tx| tx.committed_at}, open(test_result_file, "w+"))
 end
 
 if __FILE__ == $0
