@@ -11,7 +11,7 @@ require 'fileutils'
 
 BIT = 100_000_000
 PURE_TX_CAPACITY = 128 * BIT
-SECP_TX_CAPACITY = 168 * BIT
+SECP_TX_CAPACITY = 162 * BIT
 CELLBASE_REWARD = BIT * 50000
 
 class BlockTime
@@ -156,13 +156,14 @@ def get_always_success_lock_script(miner_lock_addr: , lock_hash: )
 end
 
 def get_always_success_cellbase(api, from:, tx_count:, miner_lock_addr:, step: 100)
+  tip_number = api.get_tip_header.number.to_i
   lock_script = get_always_success_lock_script(miner_lock_addr: miner_lock_addr, lock_hash: api.system_script_code_hash)
   cells = []
   while cells.map{|c| c.capacity.to_i / SECP_TX_CAPACITY}.sum < 2 * tx_count
     new_cells = api.get_cells_by_lock_hash(lock_script.to_hash, from.to_s, (from + step).to_s)
     if new_cells.empty?
       puts "can't found enough cellbase #{tx_count} from #{api.inspect} height #{from}"
-      # exit 1 if from > tip_number
+      exit 1 if from > tip_number
     end
     new_cells.reject!{|c| c.capacity.to_i < SECP_TX_CAPACITY }
     cells.concat(new_cells)
@@ -233,35 +234,37 @@ def prepare_cells(api, from, count, miner_key: , test_key:)
 
   tx_tasks = []
   out_points = []
+  cells_to_spent = []
   until out_points.size >= 2 * count
-    cells_to_spent = []
-    until cells_to_spent.map{|c| c.capacity.to_i}.sum >= SECP_TX_CAPACITY
-      if cells.empty?
-        raise "can't collect enough cells for a tx, give up"
-      end
-      cell = cells.shift
-      # skip if cell alreadt formatted
-      if cell.capacity.to_i == SECP_TX_CAPACITY
-        out_points << [cell.out_point.cell.tx_hash, cell.out_point.cell.index]
-        next
-      end
+    if cells.empty?
+      raise "can't collect enough cells for a tx, give up"
+    end
+    cell = cells.shift
+    # skip if cell is small
+    if cell.capacity.to_i < SECP_TX_CAPACITY * 2
+      out_points << [cell.out_point.cell.tx_hash, cell.out_point.cell.index]
+      next
+    else 
       cells_to_spent << cell
     end
-    tx = build_secp_prepare_tx(
-      cells_to_spent, test_lock_addr,
-      lock_script_hash: api.system_script_code_hash,
-      system_script_out_point: api.system_script_out_point)
-    tx_hash = api.compute_transaction_hash(tx)
-    tx = tx.sign(miner_key, tx_hash)
-    begin
-      tx_hash = api.send_transaction(tx.to_h)
-    rescue
-      p tx
-      raise
+    if cells_to_spent.map{|c| c.capacity.to_i}.sum >= SECP_TX_CAPACITY
+      tx = build_secp_prepare_tx(
+        cells_to_spent, test_lock_addr,
+        lock_script_hash: api.system_script_code_hash,
+        system_script_out_point: api.system_script_out_point)
+      tx_hash = api.compute_transaction_hash(tx)
+      tx = tx.sign(miner_key, tx_hash)
+      begin
+        tx_hash = api.send_transaction(tx.to_h)
+      rescue
+        p tx
+        raise
+      end
+      print ".".colorize(:yellow)
+      out_points += tx.outputs.count.times.map{|i| [tx_hash, i]}
+      tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: send_time)
+      cells_to_spent.clear()
     end
-    print ".".colorize(:yellow)
-    out_points += tx.outputs.count.times.map{|i| [tx_hash, i]}
-    tx_tasks << TxTask.new(tx_hash: tx_hash, send_at: send_time)
   end
   [tx_tasks, out_points]
 end
@@ -319,9 +322,13 @@ def send_txs(apis, out_points, txs_count, unlock_key:, miner_key:)
     Thread.new(worker_id, api, tip) do |worker_id, api, tip|
       # sign all txs
       while tx = (queue.pop(true) rescue nil)
+        begin
           tx_hash = api.compute_transaction_hash(tx)
           tx = tx.sign(unlock_key, tx_hash)
           signed_queue << tx
+        rescue StandardError => e
+          p "worker #{worker_id}: #{e}".colorize(:red)
+        end
       end
       tx_tasks = []
       count = 0
